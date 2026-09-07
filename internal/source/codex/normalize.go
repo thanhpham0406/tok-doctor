@@ -15,12 +15,13 @@ func (s UsageSnapshot) ToModelUsage() model.Usage {
 		return model.Usage{}
 	}
 	return model.Usage{
-		Input:      s.Input,
-		Cached:     s.Cached,
-		Output:     s.Output,
-		Reasoning:  s.Reasoning,
-		Total:      s.Total,
-		Confidence: model.ConfidenceMeasured,
+		Input:       s.Input,
+		Cached:      s.Cached,
+		Output:      s.Output,
+		Reasoning:   s.Reasoning,
+		Total:       s.Total,
+		Measurement: model.MeasurementMeasured,
+		Confidence:  model.ConfidenceMeasured,
 	}
 }
 
@@ -50,11 +51,12 @@ func SumSnapshots(snaps []UsageSnapshot) model.Usage {
 		return model.Usage{}
 	}
 	return model.Usage{
-		Input:      totalInput,
-		Cached:     totalCached,
-		Output:     totalOutput,
-		Reasoning:  totalReasoning,
-		Total:      totalTotal,
-		Confidence: model.ConfidenceMeasured,
+		Input:       totalInput,
+		Cached:      totalCached,
+		Output:      totalOutput,
+		Reasoning:   totalReasoning,
+		Total:       totalTotal,
+		Measurement: model.MeasurementMeasured,
+		Confidence:  model.ConfidenceMeasured,
 	}
 }

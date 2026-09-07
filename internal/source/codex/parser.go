@@ -9,7 +9,8 @@ import (
 )
 
 type tokenCountEvent struct {
-	Payload struct {
+	Timestamp string `json:"timestamp"`
+	Payload   struct {
 		Type string `json:"type"`
 		Info struct {
 			TotalTokenUsage struct {
@@ -30,47 +31,114 @@ type tokenCountEvent struct {
 	} `json:"payload"`
 }
 
+type sessionMetaEvent struct {
+	Timestamp string `json:"timestamp"`
+	Type      string `json:"type"`
+	Payload   struct {
+		ID string `json:"id"`
+	} `json:"payload"`
+}
+
+type turnContextEvent struct {
+	Timestamp string `json:"timestamp"`
+	Type      string `json:"type"`
+	Payload   struct {
+		Model string `json:"model"`
+	} `json:"payload"`
+}
+
+type ParsedSession struct {
+	ID        string
+	Model     string
+	StartedAt string
+	UpdatedAt string
+	Usage     UsageSnapshot
+}
+
 func ParseSessionUsage(path string) (UsageSnapshot, error) {
+	session, err := ParseSession(path)
+	if err != nil {
+		return UsageSnapshot{}, err
+	}
+	return session.Usage, nil
+}
+
+func ParseSession(path string) (ParsedSession, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return UsageSnapshot{}, fmt.Errorf("open codex session %s: %w", path, err)
+		return ParsedSession{}, fmt.Errorf("open codex session %s: %w", path, err)
 	}
 	defer f.Close()
 
-	final, err := parseSessionUsage(f)
+	session, err := parseSession(f)
 	if err != nil {
-		return UsageSnapshot{}, fmt.Errorf("read codex session %s: %w", path, err)
+		return ParsedSession{}, fmt.Errorf("read codex session %s: %w", path, err)
 	}
-	return final, nil
+	return session, nil
 }
 
 func parseSessionUsage(r io.Reader) (UsageSnapshot, error) {
+	session, err := parseSession(r)
+	if err != nil {
+		return UsageSnapshot{}, err
+	}
+	return session.Usage, nil
+}
+
+func parseSession(r io.Reader) (ParsedSession, error) {
 	scanner := bufio.NewScanner(r)
 	// Raise the default 64 KiB scanner ceiling
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
-	var final UsageSnapshot
+	var session ParsedSession
 	for scanner.Scan() {
 		raw := scanner.Bytes()
 		if len(raw) == 0 {
+			continue
+		}
+		var meta sessionMetaEvent
+		if err := json.Unmarshal(raw, &meta); err == nil && meta.Type == "session_meta" {
+			if meta.Payload.ID != "" {
+				session.ID = meta.Payload.ID
+			}
+			applyTimestamp(&session, meta.Timestamp)
+			continue
+		}
+		var turn turnContextEvent
+		if err := json.Unmarshal(raw, &turn); err == nil && turn.Type == "turn_context" {
+			if turn.Payload.Model != "" {
+				session.Model = turn.Payload.Model
+			}
+			applyTimestamp(&session, turn.Timestamp)
 			continue
 		}
 		var event tokenCountEvent
 		if err := json.Unmarshal(raw, &event); err != nil {
 			continue
 		}
+		applyTimestamp(&session, event.Timestamp)
 		if event.Payload.Type != "token_count" {
 			continue
 		}
 		snap := snapshotFromEvent(event)
-		if snap.Total >= final.Total {
-			final = snap
+		if snap.Total >= session.Usage.Total {
+			session.Usage = snap
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return UsageSnapshot{}, err
+		return ParsedSession{}, err
 	}
-	return final, nil
+	return session, nil
+}
+
+func applyTimestamp(session *ParsedSession, timestamp string) {
+	if timestamp == "" {
+		return
+	}
+	if session.StartedAt == "" {
+		session.StartedAt = timestamp
+	}
+	session.UpdatedAt = timestamp
 }
 
 func snapshotFromEvent(e tokenCountEvent) UsageSnapshot {

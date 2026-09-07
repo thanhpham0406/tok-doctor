@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"hi"}}
+{"type":"assistant","message":{"role":"assistant","model":"MiniMax-M3","content":[{"type":"text","text":"hello"}],"usage":{}}}

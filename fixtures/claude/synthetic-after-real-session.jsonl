@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"role":"assistant","model":"MiniMax-M3","content":[{"type":"text","text":"measured"}],"usage":{"input_tokens":100,"output_tokens":25,"cache_read_input_tokens":10,"cache_creation_input_tokens":5}}}
+{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"internal"}],"usage":{"input_tokens":20,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}

@@ -11,6 +11,7 @@ import (
 	"github.com/thanhpham0406/tok-doctor/internal/app"
 	"github.com/thanhpham0406/tok-doctor/internal/model"
 	reportjson "github.com/thanhpham0406/tok-doctor/internal/report/json"
+	reportsessions "github.com/thanhpham0406/tok-doctor/internal/report/sessions"
 	reportsource "github.com/thanhpham0406/tok-doctor/internal/report/source"
 	"github.com/thanhpham0406/tok-doctor/internal/report/terminal"
 	reportusage "github.com/thanhpham0406/tok-doctor/internal/report/usage"
@@ -42,6 +43,7 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer, logger *slog.
 	cmd.AddCommand(newDoctorCommand(ctx, stdout, tok))
 	cmd.AddCommand(newUICommand(ctx, stdout, logger, tok))
 	cmd.AddCommand(newUsageCommand(ctx, stdout, tok))
+	cmd.AddCommand(newSessionsCommand(ctx, stdout, tok))
 	cmd.AddCommand(newSourcesCommand(ctx, stdout, tok))
 	cmd.AddCommand(newSourceCommand(ctx, stdout, tok))
 
@@ -287,6 +289,33 @@ func newUsageCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra
 	return cmd
 }
 
+func newSessionsCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
+	var format string
+	var sourceName string
+
+	cmd := &cobra.Command{
+		Use:   "sessions",
+		Short: "List source sessions with authoritative usage",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := sessionsResult(ctx, tok, sourceName)
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return reportsessions.Render(stdout, result)
+			case "json":
+				return writeJSON(stdout, result)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	cmd.Flags().StringVar(&sourceName, "source", "", "source name")
+	return cmd
+}
+
 func usageResult(ctx context.Context, tok *app.App, sourceName string, all bool) (model.UsageResult, error) {
 	if all {
 		return tok.UsageAll(ctx)
@@ -296,4 +325,11 @@ func usageResult(ctx context.Context, tok *app.App, sourceName string, all bool)
 		return model.UsageResult{}, err
 	}
 	return model.UsageResult{Sources: []model.UsageEntry{entry}}, nil
+}
+
+func sessionsResult(ctx context.Context, tok *app.App, sourceName string) (model.SessionsResult, error) {
+	if sourceName == "" {
+		return tok.SessionsAll(ctx)
+	}
+	return tok.Sessions(ctx, sourceName)
 }

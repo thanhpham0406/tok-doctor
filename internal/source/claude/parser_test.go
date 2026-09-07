@@ -24,6 +24,9 @@ func TestParseSessionUsageBasic(t *testing.T) {
 	if snap.Total != 920 {
 		t.Fatalf("total = %d, want 920", snap.Total)
 	}
+	if !snap.HasUsage {
+		t.Fatal("HasUsage = false, want true")
+	}
 }
 
 func TestParseSessionUsageCacheFields(t *testing.T) {
@@ -42,7 +45,10 @@ func TestParseSessionUsageSkipsUserAndMalformed(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	if snap.Total != 0 {
-		t.Fatalf("total = %d, want 0", snap)
+		t.Fatalf("snapshot = %+v, want total 0", snap)
+	}
+	if snap.HasUsage {
+		t.Fatal("HasUsage = true, want false")
 	}
 }
 
@@ -65,10 +71,13 @@ func TestParseSessionUsageEmptyFile(t *testing.T) {
 	if snap.Total != 0 {
 		t.Fatalf("snapshot = %+v, want zero", snap)
 	}
+	if snap.HasUsage {
+		t.Fatal("HasUsage = true, want false")
+	}
 }
 
 func TestUsageSnapshotToModelUsage(t *testing.T) {
-	u := UsageSnapshot{Input: 10, Cached: 5, Output: 3, Total: 18}.ToModelUsage()
+	u := UsageSnapshot{Input: 10, Cached: 5, Output: 3, Total: 18, HasUsage: true}.ToModelUsage()
 	if u.Input != 10 || u.Cached != 5 || u.Output != 3 || u.Total != 18 {
 		t.Fatalf("usage = %+v", u)
 	}
@@ -86,12 +95,90 @@ func TestUsageSnapshotZeroHasEmptyConfidence(t *testing.T) {
 
 func TestSumSnapshotsAggregates(t *testing.T) {
 	snaps := []UsageSnapshot{
-		{Input: 10, Cached: 5, Output: 3, Total: 18},
-		{Input: 20, Cached: 2, Output: 4, Total: 26},
+		{Input: 10, Cached: 5, Output: 3, Total: 18, HasUsage: true},
+		{Input: 20, Cached: 2, Output: 4, Total: 26, HasUsage: true},
 	}
 	u := SumSnapshots(snaps)
 	if u.Input != 30 || u.Cached != 7 || u.Output != 7 || u.Total != 44 {
 		t.Fatalf("usage = %+v, want input=30 cached=7 output=7 total=44", u)
+	}
+}
+
+func TestParseSessionExplicitZeroUsageIsMeasured(t *testing.T) {
+	snap, err := ParseSessionUsage(fixturePath(t, "explicit-zero-usage-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !snap.HasUsage {
+		t.Fatal("HasUsage = false, want true for explicit usage object")
+	}
+	u := snap.ToModelUsage()
+	if u.Confidence != model.ConfidenceMeasured {
+		t.Fatalf("confidence = %q, want measured", u.Confidence)
+	}
+	if u.Total != 0 {
+		t.Fatalf("total = %d, want explicit zero", u.Total)
+	}
+}
+
+func TestParseSessionSelectsRealModelAroundSynthetic(t *testing.T) {
+	cases := map[string]string{
+		"synthetic-after-real-session.jsonl":  "MiniMax-M3",
+		"synthetic-before-real-session.jsonl": "MiniMax-M3",
+	}
+
+	for fixture, want := range cases {
+		t.Run(fixture, func(t *testing.T) {
+			session, err := ParseSession(fixturePath(t, fixture))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if session.Model != want {
+				t.Fatalf("model = %q, want %q", session.Model, want)
+			}
+			if !session.Usage.HasUsage {
+				t.Fatal("HasUsage = false, want true")
+			}
+		})
+	}
+}
+
+func TestParseSessionSyntheticOnlyModelUnavailable(t *testing.T) {
+	session, err := ParseSession(fixturePath(t, "synthetic-only-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if session.Model != "" {
+		t.Fatalf("model = %q, want unavailable", session.Model)
+	}
+	if session.Usage.HasUsage {
+		t.Fatal("HasUsage = true, want false")
+	}
+}
+
+func TestParseSessionUsageWithoutModelRemainsVisibleInput(t *testing.T) {
+	session, err := ParseSession(fixturePath(t, "usage-without-model-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if session.Model != "" {
+		t.Fatalf("model = %q, want unavailable", session.Model)
+	}
+	if !session.Usage.HasUsage {
+		t.Fatal("HasUsage = false, want true")
+	}
+}
+
+func TestParseSessionMultipleRealModelsUnavailable(t *testing.T) {
+	session, err := ParseSession(fixturePath(t, "multiple-models-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if session.Model != "" {
+		t.Fatalf("model = %q, want unavailable for multiple real models", session.Model)
+	}
+	if !session.Usage.HasUsage {
+		t.Fatal("HasUsage = false, want true")
 	}
 }
 
@@ -106,5 +193,88 @@ func TestSnapshotHasNoReasoningField(t *testing.T) {
 	}
 	if u.Output != 200 {
 		t.Fatalf("output = %d, want 200 from source output_tokens", u.Output)
+	}
+}
+
+func TestParseSessionMissingUsageKeepsAvailabilityFalse(t *testing.T) {
+	snap, err := ParseSessionUsage(fixturePath(t, "empty-artifact-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if snap.HasUsage {
+		t.Fatalf("HasUsage = true, want false for session with no usage object")
+	}
+	if snap.HasPositiveUsage() {
+		t.Fatalf("HasPositiveUsage = true, want false")
+	}
+}
+
+func TestParseSessionEmptyUsageObjectPreservesAbsence(t *testing.T) {
+	snap, err := ParseSessionUsage(fixturePath(t, "empty-usage-object-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if snap.HasUsage {
+		t.Fatalf("HasUsage = true, want false because no fields were reported")
+	}
+	if snap.Input != 0 || snap.Output != 0 || snap.Cached != 0 || snap.Total != 0 {
+		t.Fatalf("snapshot = %+v, want no fields populated", snap)
+	}
+	if snap.HasPositiveUsage() {
+		t.Fatalf("HasPositiveUsage = true, want false for empty usage object")
+	}
+}
+
+func TestParseSessionCachedOnlyIsPositive(t *testing.T) {
+	snap, err := ParseSessionUsage(fixturePath(t, "cached-only-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if snap.Cached != 100 {
+		t.Fatalf("cached = %d, want 100", snap.Cached)
+	}
+	if !snap.HasPositiveUsage() {
+		t.Fatalf("HasPositiveUsage = false, want true")
+	}
+}
+
+func TestParseSessionOutputOnlyIsPositive(t *testing.T) {
+	snap, err := ParseSessionUsage(fixturePath(t, "output-only-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if snap.Output != 10 {
+		t.Fatalf("output = %d, want 10", snap.Output)
+	}
+	if !snap.HasPositiveUsage() {
+		t.Fatalf("HasPositiveUsage = false, want true")
+	}
+}
+
+func TestParseSessionInputOnlyIsPositive(t *testing.T) {
+	snap, err := ParseSessionUsage(fixturePath(t, "input-only-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if snap.Input != 1 {
+		t.Fatalf("input = %d, want 1", snap.Input)
+	}
+	if !snap.HasPositiveUsage() {
+		t.Fatalf("HasPositiveUsage = false, want true")
+	}
+}
+
+func TestHasPositiveUsageDistinguishesMeasuredZeroFromMissing(t *testing.T) {
+	zero := UsageSnapshot{HasUsage: true}
+	if zero.HasPositiveUsage() {
+		t.Fatal("explicit-zero snapshot should not be positive")
+	}
+	missing := UsageSnapshot{}
+	if missing.HasPositiveUsage() {
+		t.Fatal("missing snapshot should not be positive")
+	}
+	measured := UsageSnapshot{HasUsage: true, Input: 5}
+	if !measured.HasPositiveUsage() {
+		t.Fatal("positive snapshot should be positive")
 	}
 }

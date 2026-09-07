@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/thanhpham0406/tok-doctor/internal/analyze"
@@ -49,6 +50,10 @@ type usageSource interface {
 	Usage(ctx context.Context, refs []source.SessionRef) (model.Usage, error)
 }
 
+type sessionSource interface {
+	ReadSessions(ctx context.Context) ([]model.Session, error)
+}
+
 func (a *App) Usage(ctx context.Context, name string) (model.UsageEntry, error) {
 	name = normalizeName(name)
 	detector, err := a.sources.Detector(name)
@@ -90,12 +95,66 @@ func (a *App) UsageAll(ctx context.Context) (model.UsageResult, error) {
 	return result, nil
 }
 
+func (a *App) Sessions(ctx context.Context, name string) (model.SessionsResult, error) {
+	name = normalizeName(name)
+	detector, err := a.sources.Detector(name)
+	if err != nil {
+		return model.SessionsResult{}, err
+	}
+	src, ok := detector.(sessionSource)
+	if !ok {
+		return model.SessionsResult{}, fmt.Errorf("sessions not supported for %s", name)
+	}
+	sessions, err := src.ReadSessions(ctx)
+	if err != nil {
+		return model.SessionsResult{}, fmt.Errorf("sessions for %s: %w", name, err)
+	}
+	return model.SessionsResult{Sessions: sessions}, nil
+}
+
+func (a *App) SessionsAll(ctx context.Context) (model.SessionsResult, error) {
+	var result model.SessionsResult
+	for _, detector := range a.sources.Detectors() {
+		src, ok := detector.(sessionSource)
+		if !ok {
+			continue
+		}
+		sessions, err := src.ReadSessions(ctx)
+		if err != nil {
+			return model.SessionsResult{}, fmt.Errorf("sessions for %s: %w", detector.Name(), err)
+		}
+		result.Sessions = append(result.Sessions, sessions...)
+	}
+	sortSessions(result.Sessions)
+	return result, nil
+}
+
 func (a *App) Sources(ctx context.Context) (source.ListResult, error) {
 	cfg, err := a.config.Load()
 	if err != nil {
 		return source.ListResult{}, err
 	}
 	return a.sources.All(ctx, cfg), nil
+}
+
+func sortSessions(sessions []model.Session) {
+	sort.SliceStable(sessions, func(i, j int) bool {
+		left := sessions[i].UpdatedAt
+		right := sessions[j].UpdatedAt
+		if left != nil && right != nil && !left.Equal(*right) {
+			return left.After(*right)
+		}
+		if left != nil && right == nil {
+			return true
+		}
+		if left == nil && right != nil {
+			return false
+		}
+		if sessions[i].Source != sessions[j].Source {
+			return sessions[i].Source < sessions[j].Source
+		}
+		return sessions[i].ID < sessions[j].ID
+	})
 }
 
 func (a *App) ShowSource(ctx context.Context, name string, override source.Override) (source.Detection, error) {

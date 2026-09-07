@@ -137,3 +137,71 @@ func TestSourceUsageNoDataIsZero(t *testing.T) {
 		t.Fatalf("total = %d, want 0", usage.Total)
 	}
 }
+
+func TestReadSessionsUsesStableIdentityAndFinalUsage(t *testing.T) {
+	withFixtureHome(t, "multi-snapshot-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(sessions))
+	}
+	session := sessions[0]
+	if session.ID != "sess-2" {
+		t.Fatalf("ID = %q, want source session id", session.ID)
+	}
+	if session.Usage.Total != 4450 {
+		t.Fatalf("total = %d, want final cumulative total 4450", session.Usage.Total)
+	}
+	if session.Usage.Reasoning == nil || *session.Usage.Reasoning != 150 {
+		t.Fatalf("reasoning = %v, want final cumulative reasoning 150", session.Usage.Reasoning)
+	}
+}
+
+func TestReadSessionsAggregateReconcilesWithUsage(t *testing.T) {
+	withFixtureHome(t, "basic-session.jsonl", "multi-snapshot-session.jsonl")
+
+	src := New()
+	refs, err := src.Sessions(context.Background())
+	if err != nil {
+		t.Fatalf("Sessions: %v", err)
+	}
+	usage, err := src.Usage(context.Background(), refs)
+	if err != nil {
+		t.Fatalf("Usage: %v", err)
+	}
+	sessions, err := src.ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+
+	var snaps []UsageSnapshot
+	for _, session := range sessions {
+		snaps = append(snaps, UsageSnapshot{
+			Input:     session.Usage.Input,
+			Cached:    session.Usage.Cached,
+			Output:    session.Usage.Output,
+			Reasoning: session.Usage.Reasoning,
+			Total:     session.Usage.Total,
+		})
+	}
+	reconciled := SumSnapshots(snaps)
+	if reconciled.Input != usage.Input || reconciled.Cached != usage.Cached ||
+		reconciled.Output != usage.Output || reconciled.Total != usage.Total {
+		t.Fatalf("session aggregate = %+v, usage = %+v", reconciled, usage)
+	}
+}
+
+func TestReadSessionsMissingModelStaysUnavailable(t *testing.T) {
+	withFixtureHome(t, "multi-snapshot-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if sessions[0].Model != "" {
+		t.Fatalf("model = %q, want unavailable", sessions[0].Model)
+	}
+}

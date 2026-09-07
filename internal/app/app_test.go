@@ -106,3 +106,59 @@ func TestUsageAllIncludesUsageCapableSources(t *testing.T) {
 		t.Fatalf("sources = %v, want codex and claude", names)
 	}
 }
+
+func TestSessionsUnsupportedRouter9(t *testing.T) {
+	app := NewWithStore(config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml")))
+	_, err := app.Sessions(context.Background(), "router9")
+	if err == nil {
+		t.Fatal("expected error for router9")
+	}
+	if err.Error() != "sessions not supported for router9" {
+		t.Fatalf("error = %q, want router9 unsupported", err.Error())
+	}
+}
+
+func TestSessionsAllIncludesSessionCapableSources(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir codex: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "projects"), 0o755); err != nil {
+		t.Fatalf("mkdir claude: %v", err)
+	}
+	copyTestFixture(t, filepath.Join("..", "..", "fixtures", "codex", "basic-session.jsonl"),
+		filepath.Join(home, ".codex", "sessions", "codex.jsonl"))
+	copyTestFixture(t, filepath.Join("..", "..", "fixtures", "claude", "basic-session.jsonl"),
+		filepath.Join(home, ".claude", "projects", "claude.jsonl"))
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	app := NewWithStore(config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml")))
+
+	result, err := app.SessionsAll(context.Background())
+	if err != nil {
+		t.Fatalf("SessionsAll: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, session := range result.Sessions {
+		seen[session.Source] = true
+	}
+	if !seen["codex"] || !seen["claude"] {
+		t.Fatalf("session sources = %v, want codex and claude", seen)
+	}
+	if seen["router9"] {
+		t.Fatalf("session sources = %v, did not expect router9", seen)
+	}
+}
+
+func copyTestFixture(t *testing.T, src, dst string) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", src, err)
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		t.Fatalf("write fixture %s: %v", dst, err)
+	}
+}

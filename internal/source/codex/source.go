@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/thanhpham0406/tok-doctor/internal/model"
 	"github.com/thanhpham0406/tok-doctor/internal/source"
@@ -107,6 +109,42 @@ func (s *Source) Usage(ctx context.Context, refs []source.SessionRef) (model.Usa
 	return SumSnapshots(snaps), nil
 }
 
+func (s *Source) ReadSessions(ctx context.Context) ([]model.Session, error) {
+	refs, err := s.Sessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sessions := make([]model.Session, 0, len(refs))
+	for _, ref := range refs {
+		parsed, err := ParseSession(ref.Path)
+		if err != nil {
+			return nil, err
+		}
+		id := parsed.ID
+		if id == "" {
+			id = stableFileID(ref)
+		}
+		session := model.Session{
+			ID:        id,
+			Source:    s.Name(),
+			Agent:     model.AgentCodex,
+			StartedAt: parseTime(parsed.StartedAt),
+			UpdatedAt: parseTime(parsed.UpdatedAt),
+			Model:     parsed.Model,
+			Usage:     parsed.Usage.ToModelUsage(),
+		}
+		if session.UpdatedAt == nil {
+			session.UpdatedAt = fileModTime(ref.Path)
+		}
+		if session.Usage.Confidence != "" {
+			session.Evidence = []model.Evidence{{Kind: "provider_usage", Source: "codex_rollout"}}
+		}
+		sessions = append(sessions, session)
+	}
+	sortSessions(sessions)
+	return sessions, nil
+}
+
 func (s *Source) capabilities() *source.Capabilities {
 	return &source.Capabilities{
 		SessionDiscovery: true,
@@ -114,6 +152,51 @@ func (s *Source) capabilities() *source.Capabilities {
 		ToolCalls:        true,
 		ToolOutput:       true,
 	}
+}
+
+func stableFileID(ref source.SessionRef) string {
+	name := ref.ID
+	if name == "" {
+		name = filepath.Base(ref.Path)
+	}
+	return strings.TrimSuffix(name, filepath.Ext(name))
+}
+
+func parseTime(value string) *time.Time {
+	if value == "" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return nil
+	}
+	return &t
+}
+
+func fileModTime(path string) *time.Time {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	t := info.ModTime()
+	return &t
+}
+
+func sortSessions(sessions []model.Session) {
+	sort.SliceStable(sessions, func(i, j int) bool {
+		left := sessions[i].UpdatedAt
+		right := sessions[j].UpdatedAt
+		if left != nil && right != nil && !left.Equal(*right) {
+			return left.After(*right)
+		}
+		if left != nil && right == nil {
+			return true
+		}
+		if left == nil && right != nil {
+			return false
+		}
+		return sessions[i].ID < sessions[j].ID
+	})
 }
 
 func hasCodexSessionData(path string) bool {
