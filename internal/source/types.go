@@ -1,6 +1,15 @@
 package source
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+type SessionRef struct {
+	ID        string
+	StartedAt time.Time
+	Path      string
+}
 
 type Status string
 

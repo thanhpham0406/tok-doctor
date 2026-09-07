@@ -9,9 +9,11 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/thanhpham0406/tok-doctor/internal/app"
+	"github.com/thanhpham0406/tok-doctor/internal/model"
 	reportjson "github.com/thanhpham0406/tok-doctor/internal/report/json"
 	reportsource "github.com/thanhpham0406/tok-doctor/internal/report/source"
 	"github.com/thanhpham0406/tok-doctor/internal/report/terminal"
+	reportusage "github.com/thanhpham0406/tok-doctor/internal/report/usage"
 	"github.com/thanhpham0406/tok-doctor/internal/source"
 	"github.com/thanhpham0406/tok-doctor/internal/webui"
 )
@@ -39,6 +41,7 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer, logger *slog.
 	cmd.AddCommand(newVersionCommand(stdout))
 	cmd.AddCommand(newDoctorCommand(ctx, stdout, tok))
 	cmd.AddCommand(newUICommand(ctx, stdout, logger, tok))
+	cmd.AddCommand(newUsageCommand(ctx, stdout, tok))
 	cmd.AddCommand(newSourcesCommand(ctx, stdout, tok))
 	cmd.AddCommand(newSourceCommand(ctx, stdout, tok))
 
@@ -246,4 +249,51 @@ func newUICommand(ctx context.Context, stdout io.Writer, logger *slog.Logger, to
 			return webui.Serve(ctx, stdout, result)
 		},
 	}
+}
+
+func newUsageCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
+	var format string
+	var sourceName string
+	var all bool
+
+	cmd := &cobra.Command{
+		Use:   "usage",
+		Short: "Report authoritative token usage for a source",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if all && sourceName != "" {
+				return fmt.Errorf("--all cannot be used with --source")
+			}
+			if !all && sourceName == "" {
+				return fmt.Errorf("--source is required unless --all is set")
+			}
+
+			result, err := usageResult(ctx, tok, sourceName, all)
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return reportusage.Render(stdout, result)
+			case "json":
+				return writeJSON(stdout, result)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	cmd.Flags().StringVar(&sourceName, "source", "", "source name")
+	cmd.Flags().BoolVar(&all, "all", false, "report usage for all usage-capable sources")
+	return cmd
+}
+
+func usageResult(ctx context.Context, tok *app.App, sourceName string, all bool) (model.UsageResult, error) {
+	if all {
+		return tok.UsageAll(ctx)
+	}
+	entry, err := tok.Usage(ctx, sourceName)
+	if err != nil {
+		return model.UsageResult{}, err
+	}
+	return model.UsageResult{Sources: []model.UsageEntry{entry}}, nil
 }

@@ -125,3 +125,127 @@ func TestSourceSetAndResetCommand(t *testing.T) {
 		t.Fatalf("config = %q, want path reset", data)
 	}
 }
+
+func TestUsageCommandMissingSourceFlag(t *testing.T) {
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"usage"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --source is missing")
+	}
+	if !strings.Contains(err.Error(), "--source is required") {
+		t.Fatalf("error = %q, want --source required", err.Error())
+	}
+}
+
+func TestUsageCommandUnsupportedSource(t *testing.T) {
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"usage", "--source", "cursor"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for unsupported source")
+	}
+	if !strings.Contains(err.Error(), "usage not supported") {
+		t.Fatalf("error = %q, want unsupported message", err.Error())
+	}
+}
+
+func TestUsageCommandUnsupportedRouter9Alias(t *testing.T) {
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"usage", "--source", "9router"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for 9router alias")
+	}
+	if !strings.Contains(err.Error(), "usage not supported for 9router") {
+		t.Fatalf("error = %q, want 9router unsupported message", err.Error())
+	}
+}
+
+func TestUsageCommandUnsupportedUnknownSource(t *testing.T) {
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"usage", "--source", "nosuch"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for unknown source")
+	}
+	if !strings.Contains(err.Error(), "unknown source") {
+		t.Fatalf("error = %q, want unknown source", err.Error())
+	}
+}
+
+func TestUsageCommandNoDataAvailable(t *testing.T) {
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"usage", "--source", "codex"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute usage: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "no usage data available") {
+		t.Fatalf("output = %q, want no usage data available", stdout.String())
+	}
+}
+
+func TestUsageAllCommand(t *testing.T) {
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"usage", "--all"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute usage all: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "codex: no usage data available") ||
+		!strings.Contains(got, "claude: no usage data available") {
+		t.Fatalf("output = %q, want codex and claude no data", got)
+	}
+}
+
+func TestUsageAllJSONCommand(t *testing.T) {
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"usage", "--all", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute usage all json: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, `"sources"`) ||
+		!strings.Contains(got, `"source": "codex"`) ||
+		!strings.Contains(got, `"source": "claude"`) {
+		t.Fatalf("output = %q, want usage sources json", got)
+	}
+}
+
+func TestUsageAllRejectsSource(t *testing.T) {
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"usage", "--all", "--source", "codex"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for --all with --source")
+	}
+	if !strings.Contains(err.Error(), "--all cannot be used with --source") {
+		t.Fatalf("error = %q, want flag conflict", err.Error())
+	}
+}

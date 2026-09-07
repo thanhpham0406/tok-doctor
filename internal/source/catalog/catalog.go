@@ -63,6 +63,16 @@ func (r Registry) Kind(name string) (source.Kind, error) {
 	return detector.Kind(), nil
 }
 
+func (r Registry) Detector(name string) (source.Detector, error) {
+	return r.find(name)
+}
+
+func (r Registry) Detectors() []source.Detector {
+	out := make([]source.Detector, len(r.detectors))
+	copy(out, r.detectors)
+	return out
+}
+
 func (r Registry) Names() []string {
 	names := make([]string, 0, len(r.detectors))
 	for _, detector := range r.detectors {

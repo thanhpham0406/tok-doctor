@@ -1,0 +1,5 @@
+{"type":"session_meta","payload":{"id":"sess-2"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":800,"cached_input_tokens":200,"output_tokens":300,"reasoning_tokens":0,"total_tokens":1300},"last_token_usage":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":200,"reasoning_tokens":0,"total_tokens":800}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1700,"cached_input_tokens":500,"output_tokens":750,"reasoning_tokens":0,"total_tokens":2950},"last_token_usage":{"input_tokens":900,"cached_input_tokens":300,"output_tokens":450,"reasoning_tokens":0,"total_tokens":1650}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":2400,"cached_input_tokens":800,"output_tokens":1100,"reasoning_tokens":150,"total_tokens":4450},"last_token_usage":{"input_tokens":700,"cached_input_tokens":300,"output_tokens":350,"reasoning_tokens":150,"total_tokens":1500}}}}
+{"type":"event_msg","payload":{"type":"turn_complete"}}

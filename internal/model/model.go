@@ -33,6 +33,15 @@ type Usage struct {
 	Confidence Confidence `json:"confidence,omitempty"`
 }
 
+type UsageResult struct {
+	Sources []UsageEntry `json:"sources"`
+}
+
+type UsageEntry struct {
+	Source string `json:"source"`
+	Usage  Usage  `json:"usage"`
+}
+
 type Finding struct {
 	RuleID string `json:"rule_id"`
 	Title  string `json:"title"`

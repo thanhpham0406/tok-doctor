@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/thanhpham0406/tok-doctor/internal/config"
@@ -68,4 +69,48 @@ func TestResetSourceFallsBackToAuto(t *testing.T) {
 
 func touch(path string) error {
 	return os.WriteFile(path, []byte("{}\n"), 0o600)
+}
+
+func TestUsageUnknownSource(t *testing.T) {
+	app := NewWithStore(config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml")))
+	_, err := app.Usage(context.Background(), "nosuch")
+	if err == nil {
+		t.Fatal("expected error for unknown source")
+	}
+}
+
+func TestUsageUnsupportedSource(t *testing.T) {
+	app := NewWithStore(config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml")))
+	_, err := app.Usage(context.Background(), "cursor")
+	if err == nil {
+		t.Fatal("expected error for unsupported source")
+	}
+}
+
+func TestUsageUnsupportedRouter9Alias(t *testing.T) {
+	app := NewWithStore(config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml")))
+	_, err := app.Usage(context.Background(), "router9")
+	if err == nil {
+		t.Fatal("expected error for 9router alias")
+	}
+}
+
+func TestUsageAllIncludesUsageCapableSources(t *testing.T) {
+	app := NewWithStore(config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml")))
+
+	result, err := app.UsageAll(context.Background())
+	if err != nil {
+		t.Fatalf("UsageAll: %v", err)
+	}
+
+	var names []string
+	for _, entry := range result.Sources {
+		names = append(names, entry.Source)
+	}
+	if !slices.Contains(names, "codex") || !slices.Contains(names, "claude") {
+		t.Fatalf("sources = %v, want codex and claude", names)
+	}
+	if slices.Contains(names, "cursor") {
+		t.Fatalf("sources = %v, did not want unsupported cursor", names)
+	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/thanhpham0406/tok-doctor/internal/analyze"
 	"github.com/thanhpham0406/tok-doctor/internal/config"
+	"github.com/thanhpham0406/tok-doctor/internal/model"
 	"github.com/thanhpham0406/tok-doctor/internal/source"
 	"github.com/thanhpham0406/tok-doctor/internal/source/catalog"
 	"github.com/thanhpham0406/tok-doctor/internal/source/codex"
@@ -41,6 +42,52 @@ func NewWithStore(store config.Store) *App {
 func (a *App) Doctor(ctx context.Context) (analyze.Result, error) {
 	session := a.codex.EmptySession(ctx)
 	return a.analyzer.Analyze(ctx, session), nil
+}
+
+type usageSource interface {
+	Sessions(ctx context.Context) ([]source.SessionRef, error)
+	Usage(ctx context.Context, refs []source.SessionRef) (model.Usage, error)
+}
+
+func (a *App) Usage(ctx context.Context, name string) (model.UsageEntry, error) {
+	name = normalizeName(name)
+	detector, err := a.sources.Detector(name)
+	if err != nil {
+		return model.UsageEntry{}, err
+	}
+	src, ok := detector.(usageSource)
+	if !ok {
+		return model.UsageEntry{}, fmt.Errorf("usage not supported for %s", name)
+	}
+	refs, err := src.Sessions(ctx)
+	if err != nil {
+		return model.UsageEntry{}, fmt.Errorf("usage for %s: %w", name, err)
+	}
+	usage, err := src.Usage(ctx, refs)
+	if err != nil {
+		return model.UsageEntry{}, fmt.Errorf("usage for %s: %w", name, err)
+	}
+	return model.UsageEntry{Source: name, Usage: usage}, nil
+}
+
+func (a *App) UsageAll(ctx context.Context) (model.UsageResult, error) {
+	var result model.UsageResult
+	for _, detector := range a.sources.Detectors() {
+		src, ok := detector.(usageSource)
+		if !ok {
+			continue
+		}
+		refs, err := src.Sessions(ctx)
+		if err != nil {
+			return model.UsageResult{}, fmt.Errorf("usage for %s: %w", detector.Name(), err)
+		}
+		usage, err := src.Usage(ctx, refs)
+		if err != nil {
+			return model.UsageResult{}, fmt.Errorf("usage for %s: %w", detector.Name(), err)
+		}
+		result.Sources = append(result.Sources, model.UsageEntry{Source: detector.Name(), Usage: usage})
+	}
+	return result, nil
 }
 
 func (a *App) Sources(ctx context.Context) (source.ListResult, error) {

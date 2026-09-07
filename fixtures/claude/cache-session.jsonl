@@ -1,0 +1,3 @@
+{"type":"user","message":{"role":"user","content":"explain"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"x"}],"usage":{"input_tokens":500,"output_tokens":100,"cache_read_input_tokens":1500,"cache_creation_input_tokens":200}}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"y"}],"usage":{"input_tokens":250,"output_tokens":75,"cache_read_input_tokens":1700,"cache_creation_input_tokens":0}}}

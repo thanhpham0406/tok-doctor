@@ -3,8 +3,10 @@ package codex
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/thanhpham0406/tok-doctor/internal/model"
 	"github.com/thanhpham0406/tok-doctor/internal/source"
 )
 
@@ -55,5 +57,80 @@ func TestEmptySession(t *testing.T) {
 	}
 	if session.ID == "" {
 		t.Fatal("ID is empty")
+	}
+}
+
+func withFixtureHome(t *testing.T, names ...string) {
+	t.Helper()
+	home := t.TempDir()
+	sessions := filepath.Join(home, ".codex", "sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	for _, name := range names {
+		src := filepath.Join("..", "..", "..", "fixtures", "codex", name)
+		data, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", name, err)
+		}
+		dst := filepath.Join(sessions, name)
+		if err := os.WriteFile(dst, data, 0o600); err != nil {
+			t.Fatalf("copy fixture %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
+func TestSourceUsageAggregatesAcrossFixtures(t *testing.T) {
+	withFixtureHome(t, "basic-session.jsonl", "multi-snapshot-session.jsonl")
+
+	src := New()
+	refs, err := src.Sessions(context.Background())
+	if err != nil {
+		t.Fatalf("sessions: %v", err)
+	}
+	if len(refs) == 0 {
+		t.Fatal("expected sessions to be discovered")
+	}
+
+	usage, err := src.Usage(context.Background(), refs)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+
+	wantInput := int64(3600)
+	wantCached := int64(1100)
+	wantOutput := int64(1550)
+	wantReasoning := int64(150)
+	wantTotal := int64(6400)
+	if usage.Input != wantInput || usage.Cached != wantCached || usage.Output != wantOutput ||
+		usage.Reasoning != wantReasoning || usage.Total != wantTotal {
+		t.Fatalf("usage = %+v, want input=%d cached=%d output=%d reasoning=%d total=%d",
+			usage, wantInput, wantCached, wantOutput, wantReasoning, wantTotal)
+	}
+	if usage.Confidence != model.ConfidenceMeasured {
+		t.Fatalf("confidence = %q, want measured", usage.Confidence)
+	}
+}
+
+func TestSourceUsageNoDataIsZero(t *testing.T) {
+	withFixtureHome(t, "no-usage-session.jsonl")
+
+	src := New()
+	refs, err := src.Sessions(context.Background())
+	if err != nil {
+		t.Fatalf("sessions: %v", err)
+	}
+
+	usage, err := src.Usage(context.Background(), refs)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if usage.Confidence != "" {
+		t.Fatalf("confidence = %q, want empty", usage.Confidence)
+	}
+	if usage.Total != 0 {
+		t.Fatalf("total = %d, want 0", usage.Total)
 	}
 }

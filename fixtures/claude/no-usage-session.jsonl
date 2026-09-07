@@ -1,0 +1,3 @@
+{"type":"user","message":{"role":"user","content":"hi"}}
+not-json-line-here
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}
