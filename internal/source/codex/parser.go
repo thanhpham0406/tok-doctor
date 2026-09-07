@@ -47,12 +47,18 @@ type turnContextEvent struct {
 	} `json:"payload"`
 }
 
+type snapshot struct {
+	Snap      UsageSnapshot
+	Timestamp string
+}
+
 type ParsedSession struct {
 	ID        string
 	Model     string
 	StartedAt string
 	UpdatedAt string
 	Usage     UsageSnapshot
+	Snapshots []snapshot
 }
 
 func ParseSessionUsage(path string) (UsageSnapshot, error) {
@@ -121,6 +127,7 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 			continue
 		}
 		snap := snapshotFromEvent(event)
+		session.Snapshots = append(session.Snapshots, snapshot{Snap: snap, Timestamp: event.Timestamp})
 		if snap.Total >= session.Usage.Total {
 			session.Usage = snap
 		}
@@ -150,4 +157,31 @@ func snapshotFromEvent(e tokenCountEvent) UsageSnapshot {
 		Reasoning: t.ReasoningOutputTokens,
 		Total:     t.TotalTokens,
 	}
+}
+
+func deltaSnapshot(prev, curr snapshot) (UsageSnapshot, bool) {
+	if curr.Snap.Total < prev.Snap.Total ||
+		curr.Snap.Input < prev.Snap.Input ||
+		curr.Snap.Output < prev.Snap.Output ||
+		curr.Snap.Cached < prev.Snap.Cached {
+		return UsageSnapshot{}, false
+	}
+	out := UsageSnapshot{
+		Input:  curr.Snap.Input - prev.Snap.Input,
+		Cached: curr.Snap.Cached - prev.Snap.Cached,
+		Output: curr.Snap.Output - prev.Snap.Output,
+		Total:  curr.Snap.Total - prev.Snap.Total,
+	}
+	if curr.Snap.Reasoning != nil {
+		if prev.Snap.Reasoning == nil {
+			reasoning := *curr.Snap.Reasoning
+			out.Reasoning = &reasoning
+		} else if *curr.Snap.Reasoning >= *prev.Snap.Reasoning {
+			reasoning := *curr.Snap.Reasoning - *prev.Snap.Reasoning
+			out.Reasoning = &reasoning
+		} else {
+			return UsageSnapshot{}, false
+		}
+	}
+	return out, true
 }

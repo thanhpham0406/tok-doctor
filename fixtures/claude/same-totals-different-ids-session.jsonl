@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"id":"msg_x1","role":"assistant","model":"MiniMax-M3","content":[{"type":"text","text":"a"}],"usage":{"input_tokens":500,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
+{"type":"assistant","message":{"id":"msg_x2","role":"assistant","model":"MiniMax-M3","content":[{"type":"text","text":"b"}],"usage":{"input_tokens":500,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}

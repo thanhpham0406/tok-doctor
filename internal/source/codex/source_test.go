@@ -205,3 +205,183 @@ func TestReadSessionsMissingModelStaysUnavailable(t *testing.T) {
 		t.Fatalf("model = %q, want unavailable", sessions[0].Model)
 	}
 }
+
+func TestReadSessionsTurnsFromCumulativeSnapshotsAreDerived(t *testing.T) {
+	withFixtureHome(t, "multi-snapshot-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(sessions))
+	}
+	turns := sessions[0].Turns
+	if len(turns) != 3 {
+		t.Fatalf("turns = %d, want 3", len(turns))
+	}
+
+	cases := []struct {
+		index int
+		input int64
+		cache int64
+		out   int64
+		reas  int64
+		total int64
+	}{
+		{0, 800, 200, 300, 0, 1300},
+		{1, 900, 300, 450, 0, 1650},
+		{2, 700, 300, 350, 150, 1500},
+	}
+	for _, want := range cases {
+		turn := turns[want.index]
+		if turn.Sequence != want.index+1 {
+			t.Fatalf("turn %d sequence = %d, want %d", want.index, turn.Sequence, want.index+1)
+		}
+		if turn.Usage.Input != want.input ||
+			turn.Usage.Cached != want.cache ||
+			turn.Usage.Output != want.out ||
+			turn.Usage.Total != want.total {
+			t.Fatalf("turn %d usage = %+v, want input=%d cache=%d out=%d total=%d",
+				want.index, turn.Usage, want.input, want.cache, want.out, want.total)
+		}
+		if turn.Measurement != model.MeasurementDerived {
+			t.Fatalf("turn %d measurement = %q, want derived", want.index, turn.Measurement)
+		}
+		if turn.Confidence != model.ConfidenceHigh {
+			t.Fatalf("turn %d confidence = %q, want high", want.index, turn.Confidence)
+		}
+		if turn.Usage.Reasoning == nil || *turn.Usage.Reasoning != want.reas {
+			t.Fatalf("turn %d reasoning = %v, want %d (source reported explicit value)", want.index, turn.Usage.Reasoning, want.reas)
+		}
+	}
+}
+
+func TestReadSessionsTurnsReconcileWithSessionUsage(t *testing.T) {
+	withFixtureHome(t, "basic-session.jsonl", "multi-snapshot-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	for _, sess := range sessions {
+		if cmp := model.ReconcileUsage(sess); !cmp.Matches() {
+			t.Fatalf("session %s: turns do not reconcile with session usage, comparison = %+v (session=%+v turns=%+v)",
+				sess.ID, cmp, sess.Usage, sess.Turns)
+		}
+	}
+}
+
+func TestReadSessionsTurnsSingleSnapshotHasFirstTurn(t *testing.T) {
+	withFixtureHome(t, "basic-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 1 || len(sessions[0].Turns) != 1 {
+		t.Fatalf("expected single turn, got %d turns", len(sessions[0].Turns))
+	}
+	turn := sessions[0].Turns[0]
+	if turn.Usage.Total != 1950 {
+		t.Fatalf("first turn total = %d, want 1950", turn.Usage.Total)
+	}
+	if turn.Measurement != model.MeasurementDerived {
+		t.Fatalf("first turn measurement = %q, want derived", turn.Measurement)
+	}
+}
+
+func TestReadSessionsTurnsMissingReasoningPreservesUnavailable(t *testing.T) {
+	withFixtureHome(t, "missing-reasoning-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(sessions))
+	}
+	if len(sessions[0].Turns) != 1 {
+		t.Fatalf("turns = %d, want 1", len(sessions[0].Turns))
+	}
+	turn := sessions[0].Turns[0]
+	if turn.Usage.Reasoning != nil {
+		t.Fatalf("reasoning = %v, want nil for missing reasoning field", *turn.Usage.Reasoning)
+	}
+}
+
+func TestReadSessionsTurnsDoNotDoubleCountCumulative(t *testing.T) {
+	withFixtureHome(t, "multi-snapshot-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	var sum int64
+	for _, turn := range sessions[0].Turns {
+		sum += turn.Usage.Total
+	}
+	if sum != 4450 {
+		t.Fatalf("Σ turn totals = %d, want 4450 (cumulative max), not 1300+2950+4450=8700", sum)
+	}
+}
+
+func TestReadSessionsTurnsSequentialIDs(t *testing.T) {
+	withFixtureHome(t, "multi-snapshot-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	prev := ""
+	for _, turn := range sessions[0].Turns {
+		if prev != "" && turn.ID <= prev {
+			t.Fatalf("turn ids not strictly increasing: %q <= %q", turn.ID, prev)
+		}
+		prev = turn.ID
+	}
+}
+
+func TestReconcileUsageHandlesNoUsageSessionGracefully(t *testing.T) {
+	withFixtureHome(t, "no-usage-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1 (no-usage session still listed)", len(sessions))
+	}
+	if len(sessions[0].Turns) != 0 {
+		t.Fatalf("turns = %d, want 0 (no snapshots in fixture)", len(sessions[0].Turns))
+	}
+}
+
+func TestParseSessionTurnCount(t *testing.T) {
+	session, err := ParseSession(fixturePath(t, "multi-snapshot-session.jsonl"))
+	if err != nil {
+		t.Fatalf("ParseSession: %v", err)
+	}
+	if len(session.Snapshots) != 3 {
+		t.Fatalf("snapshots = %d, want 3", len(session.Snapshots))
+	}
+}
+
+func TestReadSessionsAnomalyMarkedUnknownNotSilentlyClamped(t *testing.T) {
+	withFixtureHome(t, "anomaly-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 1 || len(sessions[0].Turns) != 2 {
+		t.Fatalf("got %d turns, want 2", len(sessions[0].Turns))
+	}
+	second := sessions[0].Turns[1]
+	if second.Measurement != model.MeasurementUnknown {
+		t.Fatalf("anomaly turn measurement = %q, want unknown", second.Measurement)
+	}
+	if second.Usage.Total != 0 {
+		t.Fatalf("anomaly turn total = %d, want 0 (not silently negative-clamped)", second.Usage.Total)
+	}
+}

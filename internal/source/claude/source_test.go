@@ -333,3 +333,109 @@ func TestReadSessionsAndUsageAgree(t *testing.T) {
 		t.Fatalf("usage aggregate = %+v, session aggregate = %+v", usage, filterUsage)
 	}
 }
+
+func TestReadSessionsTurnsCountMatchesRealModelCalls(t *testing.T) {
+	withFixtureHome(t, "basic-session.jsonl", "synthetic-after-real-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(sessions))
+	}
+	turnCounts := map[string]int{}
+	for _, sess := range sessions {
+		turnCounts[sess.ID] = len(sess.Turns)
+	}
+	if turnCounts["basic-session"] != 2 {
+		t.Fatalf("basic-session turns = %d, want 2", turnCounts["basic-session"])
+	}
+	if turnCounts["synthetic-after-real-session"] != 1 {
+		t.Fatalf("synthetic-after-real-session turns = %d, want 1 (real invocation only; synthetic excluded)", turnCounts["synthetic-after-real-session"])
+	}
+}
+
+func TestReadSessionsTurnsReconcileWithSessionUsage(t *testing.T) {
+	withFixtureHome(t, "basic-session.jsonl", "cached-only-session.jsonl", "output-only-session.jsonl", "input-only-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	for _, sess := range sessions {
+		if cmp := model.ReconcileUsage(sess); !cmp.Matches() {
+			t.Fatalf("session %s: turns do not reconcile, comparison = %+v", sess.ID, cmp)
+		}
+	}
+}
+
+func TestReadSessionsTurnsKeepPerCallUsage(t *testing.T) {
+	withFixtureHome(t, "basic-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(sessions))
+	}
+	if len(sessions[0].Turns) != 2 {
+		t.Fatalf("turns = %d, want 2", len(sessions[0].Turns))
+	}
+	first := sessions[0].Turns[0]
+	if first.Usage.Input != 420 || first.Usage.Output != 80 {
+		t.Fatalf("first turn usage = %+v, want 420/80 (per-call usage, not session aggregate)", first.Usage)
+	}
+	second := sessions[0].Turns[1]
+	if second.Usage.Input != 300 || second.Usage.Output != 120 {
+		t.Fatalf("second turn usage = %+v, want 300/120", second.Usage)
+	}
+}
+
+func TestReadSessionsTurnsDoNotUseSyntheticModel(t *testing.T) {
+	withFixtureHome(t, "synthetic-only-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("sessions = %d, want 0 (no positive usage)", len(sessions))
+	}
+}
+
+func TestReadSessionsTurnReasoningIsUnavailable(t *testing.T) {
+	withFixtureHome(t, "basic-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	for _, sess := range sessions {
+		for _, turn := range sess.Turns {
+			if turn.Usage.Reasoning != nil {
+				t.Fatalf("turn %s reasoning = %v, want nil (Claude session format does not expose reasoning)", turn.ID, *turn.Usage.Reasoning)
+			}
+		}
+	}
+}
+
+func TestReadSessionsTurnSequenceIsStable(t *testing.T) {
+	withFixtureHome(t, "basic-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	for _, sess := range sessions {
+		for i, turn := range sess.Turns {
+			if turn.Sequence != i+1 {
+				t.Fatalf("session %s turn %d sequence = %d, want %d", sess.ID, i, turn.Sequence, i+1)
+			}
+			if turn.ID == "" {
+				t.Fatalf("turn missing id at index %d", i)
+			}
+		}
+	}
+}

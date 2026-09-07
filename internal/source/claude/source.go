@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -108,14 +109,16 @@ func (s *Source) ReadSessions(ctx context.Context) ([]model.Session, error) {
 		if !parsed.Usage.HasPositiveUsage() {
 			continue
 		}
+		id := stableFileID(ref)
 		session := model.Session{
-			ID:        stableFileID(ref),
+			ID:        id,
 			Source:    s.Name(),
 			Agent:     model.AgentClaude,
 			StartedAt: parseTime(parsed.StartedAt),
 			UpdatedAt: parseTime(parsed.UpdatedAt),
 			Model:     parsed.Model,
 			Usage:     parsed.Usage.ToModelUsage(),
+			Turns:     claudeTurns(id, parsed),
 		}
 		if session.UpdatedAt == nil {
 			session.UpdatedAt = fileModTime(ref.Path)
@@ -127,6 +130,35 @@ func (s *Source) ReadSessions(ctx context.Context) ([]model.Session, error) {
 	}
 	sortSessions(sessions)
 	return sessions, nil
+}
+
+func claudeTurns(sessionID string, parsed ParsedSession) []model.Turn {
+	if len(parsed.Invocations) == 0 {
+		return nil
+	}
+	turns := make([]model.Turn, 0, len(parsed.Invocations))
+	for i, inv := range parsed.Invocations {
+		turn := model.Turn{
+			Sequence:    i + 1,
+			Timestamp:   parseTime(inv.Timestamp),
+			Model:       inv.Model,
+			Usage:       inv.Snapshot.ToModelUsage(),
+			Measurement: model.MeasurementMeasured,
+			Confidence:  model.ConfidenceMeasured,
+			Evidence:    []model.Evidence{{Kind: "local_model_usage", Source: "claude_session"}},
+		}
+		if inv.ID != "" {
+			turn.ID = inv.ID
+		} else {
+			turn.ID = sessionID + "#" + strconv.Itoa(i+1)
+		}
+		if inv.Conflict {
+			turn.Confidence = ""
+			turn.Evidence = append(turn.Evidence, model.Evidence{Kind: "duplicate_conflict", Source: "claude_session"})
+		}
+		turns = append(turns, turn)
+	}
+	return turns
 }
 
 func (s *Source) capabilities() *source.Capabilities {

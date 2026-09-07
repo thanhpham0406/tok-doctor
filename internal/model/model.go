@@ -38,7 +38,19 @@ type Session struct {
 	Model       string       `json:"model,omitempty"`
 	Usage       Usage        `json:"usage"`
 	Invocations []Invocation `json:"invocations,omitempty"`
+	Turns       []Turn       `json:"turns,omitempty"`
 	Evidence    []Evidence   `json:"evidence,omitempty"`
+}
+
+type Turn struct {
+	ID          string          `json:"id"`
+	Sequence    int             `json:"sequence"`
+	Timestamp   *time.Time      `json:"timestamp,omitempty"`
+	Model       string          `json:"model,omitempty"`
+	Usage       Usage           `json:"usage"`
+	Measurement MeasurementKind `json:"measurement,omitempty"`
+	Confidence  Confidence      `json:"confidence,omitempty"`
+	Evidence    []Evidence      `json:"evidence,omitempty"`
 }
 
 type Invocation struct {

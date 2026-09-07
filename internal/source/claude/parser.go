@@ -9,9 +9,12 @@ import (
 )
 
 type assistantUsage struct {
-	Timestamp string `json:"timestamp"`
-	Type      string `json:"type"`
-	Message   struct {
+	UUID       string `json:"uuid"`
+	ParentUUID string `json:"parentUuid"`
+	Timestamp  string `json:"timestamp"`
+	Type       string `json:"type"`
+	Message    struct {
+		ID    string       `json:"id"`
 		Role  string       `json:"role"`
 		Model string       `json:"model"`
 		Usage *usageFields `json:"usage"`
@@ -55,12 +58,23 @@ func (u *usageFields) snapshot() UsageSnapshot {
 	return snap
 }
 
+type invocation struct {
+	ID        string
+	Model     string
+	Snapshot  UsageSnapshot
+	Timestamp string
+	Conflict  bool
+}
+
 type ParsedSession struct {
-	Model      string
-	StartedAt  string
-	UpdatedAt  string
-	Usage      UsageSnapshot
-	modelNames map[string]struct{}
+	Model       string
+	StartedAt   string
+	UpdatedAt   string
+	Usage       UsageSnapshot
+	modelNames  map[string]struct{}
+	Invocations []invocation
+	duplicates  int
+	conflicts   int
 }
 
 func ParseSessionUsage(path string) (UsageSnapshot, error) {
@@ -98,6 +112,11 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
 	var session ParsedSession
+	// Claude Code records carry provider-issued message.id on every
+	// assistant usage block; treat it as the deduplication key because
+	// the local transcript can re-emit the same model response.
+	seenByMessageID := map[string]invocation{}
+
 	for scanner.Scan() {
 		raw := scanner.Bytes()
 		if len(raw) == 0 {
@@ -118,9 +137,47 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 			session.modelNames[entry.Message.Model] = struct{}{}
 			session.Model = selectedModel(session.modelNames)
 		}
-		add := entry.Message.Usage.snapshot()
-		if add.HasUsage {
-			session.Usage = session.Usage.add(add)
+		if isSynthetic(entry.Message.Model) {
+			continue
+		}
+		usage := entry.Message.Usage.snapshot()
+		if !usage.HasUsage {
+			continue
+		}
+
+		ident := entry.Message.ID
+		if ident == "" {
+			session.Invocations = append(session.Invocations, invocation{
+				Model:     entry.Message.Model,
+				Snapshot:  usage,
+				Timestamp: entry.Timestamp,
+			})
+			session.Usage = session.Usage.add(usage)
+			continue
+		}
+
+		prev, seen := seenByMessageID[ident]
+		switch {
+		case !seen:
+			inv := invocation{
+				ID:        ident,
+				Model:     entry.Message.Model,
+				Snapshot:  usage,
+				Timestamp: entry.Timestamp,
+			}
+			seenByMessageID[ident] = inv
+			session.Invocations = append(session.Invocations, inv)
+			session.Usage = session.Usage.add(usage)
+		case !snapshotsEqual(prev.Snapshot, usage):
+			for i := range session.Invocations {
+				if session.Invocations[i].ID == ident {
+					session.Invocations[i].Conflict = true
+					break
+				}
+			}
+			session.conflicts++
+		default:
+			session.duplicates++
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -129,8 +186,16 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 	return session, nil
 }
 
+func snapshotsEqual(a, b UsageSnapshot) bool {
+	return a.Input == b.Input && a.Cached == b.Cached && a.Output == b.Output && a.Total == b.Total
+}
+
 func isRealModel(model string) bool {
-	return model != "" && model != "<synthetic>"
+	return model != "" && !isSynthetic(model)
+}
+
+func isSynthetic(model string) bool {
+	return model == "<synthetic>"
 }
 
 func selectedModel(models map[string]struct{}) string {

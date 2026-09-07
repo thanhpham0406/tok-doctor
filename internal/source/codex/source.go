@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -132,6 +133,7 @@ func (s *Source) ReadSessions(ctx context.Context) ([]model.Session, error) {
 			UpdatedAt: parseTime(parsed.UpdatedAt),
 			Model:     parsed.Model,
 			Usage:     parsed.Usage.ToModelUsage(),
+			Turns:     reconstructTurns(id, parsed),
 		}
 		if session.UpdatedAt == nil {
 			session.UpdatedAt = fileModTime(ref.Path)
@@ -143,6 +145,37 @@ func (s *Source) ReadSessions(ctx context.Context) ([]model.Session, error) {
 	}
 	sortSessions(sessions)
 	return sessions, nil
+}
+
+func reconstructTurns(sessionID string, parsed ParsedSession) []model.Turn {
+	if len(parsed.Snapshots) == 0 {
+		return nil
+	}
+	turns := make([]model.Turn, 0, len(parsed.Snapshots))
+	prev := snapshot{}
+	for i, curr := range parsed.Snapshots {
+		turn := model.Turn{
+			ID:          sessionID + "#" + strconv.Itoa(i+1),
+			Sequence:    i + 1,
+			Timestamp:   parseTime(curr.Timestamp),
+			Measurement: model.MeasurementDerived,
+			Confidence:  model.ConfidenceHigh,
+			Evidence:    []model.Evidence{{Kind: "cumulative_usage_snapshot", Source: "codex_rollout"}},
+		}
+		if parsed.Model != "" {
+			turn.Model = parsed.Model
+		}
+		delta, ok := deltaSnapshot(prev, curr)
+		if !ok {
+			turn.Measurement = model.MeasurementUnknown
+			turn.Confidence = ""
+		} else {
+			turn.Usage = delta.toModelUsage(model.MeasurementDerived, model.ConfidenceHigh)
+		}
+		turns = append(turns, turn)
+		prev = curr
+	}
+	return turns
 }
 
 func (s *Source) capabilities() *source.Capabilities {

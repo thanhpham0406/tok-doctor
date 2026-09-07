@@ -25,6 +25,13 @@ func (s UsageSnapshot) ToModelUsage() model.Usage {
 	}
 }
 
+func (s UsageSnapshot) toModelUsage(measurement model.MeasurementKind, confidence model.Confidence) model.Usage {
+	usage := s.ToModelUsage()
+	usage.Measurement = measurement
+	usage.Confidence = confidence
+	return usage
+}
+
 func SumSnapshots(snaps []UsageSnapshot) model.Usage {
 	var (
 		totalInput     int64

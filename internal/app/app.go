@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -127,6 +128,46 @@ func (a *App) SessionsAll(ctx context.Context) (model.SessionsResult, error) {
 	}
 	sortSessions(result.Sessions)
 	return result, nil
+}
+
+var (
+	ErrInspectSessionNotFound  = errors.New("session not found")
+	ErrInspectAmbiguousSession = errors.New("ambiguous session id")
+)
+
+func (a *App) Inspect(ctx context.Context, id string) (model.Session, error) {
+	sessions, err := a.SessionsAll(ctx)
+	if err != nil {
+		return model.Session{}, err
+	}
+	return pickSessionByID(sessions.Sessions, id)
+}
+
+func pickSessionByID(sessions []model.Session, id string) (model.Session, error) {
+	if id == "" {
+		return model.Session{}, fmt.Errorf("inspect session id: %w", ErrInspectSessionNotFound)
+	}
+	if len(sessions) == 0 {
+		return model.Session{}, fmt.Errorf("inspect session %q: %w", id, ErrInspectSessionNotFound)
+	}
+	for _, sess := range sessions {
+		if sess.ID == id {
+			return sess, nil
+		}
+	}
+	var matches []model.Session
+	for _, sess := range sessions {
+		if strings.HasPrefix(sess.ID, id) {
+			matches = append(matches, sess)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return model.Session{}, fmt.Errorf("inspect session %q: %w", id, ErrInspectAmbiguousSession)
+	}
+	return model.Session{}, fmt.Errorf("inspect session %q: %w", id, ErrInspectSessionNotFound)
 }
 
 func (a *App) Sources(ctx context.Context) (source.ListResult, error) {

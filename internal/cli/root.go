@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/thanhpham0406/tok-doctor/internal/app"
 	"github.com/thanhpham0406/tok-doctor/internal/model"
+	reportinspect "github.com/thanhpham0406/tok-doctor/internal/report/inspect"
 	reportjson "github.com/thanhpham0406/tok-doctor/internal/report/json"
 	reportsessions "github.com/thanhpham0406/tok-doctor/internal/report/sessions"
 	reportsource "github.com/thanhpham0406/tok-doctor/internal/report/source"
@@ -44,6 +45,7 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer, logger *slog.
 	cmd.AddCommand(newUICommand(ctx, stdout, logger, tok))
 	cmd.AddCommand(newUsageCommand(ctx, stdout, tok))
 	cmd.AddCommand(newSessionsCommand(ctx, stdout, tok))
+	cmd.AddCommand(newInspectCommand(ctx, stdout, tok))
 	cmd.AddCommand(newSourcesCommand(ctx, stdout, tok))
 	cmd.AddCommand(newSourceCommand(ctx, stdout, tok))
 
@@ -332,4 +334,42 @@ func sessionsResult(ctx context.Context, tok *app.App, sourceName string) (model
 		return tok.SessionsAll(ctx)
 	}
 	return tok.Sessions(ctx, sourceName)
+}
+
+func newInspectCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
+	var (
+		format   string
+		allTurns bool
+		turn     int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "inspect <session-id>",
+		Short: "Show the authoritative usage and per-turn breakdown of a session",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if allTurns && turn > 0 {
+				return fmt.Errorf("--all-turns and --turn cannot be combined")
+			}
+			session, err := tok.Inspect(ctx, args[0])
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return reportinspect.Render(stdout, session, reportinspect.Options{
+					AllTurns: allTurns,
+					Turn:     turn,
+				})
+			case "json":
+				return reportinspect.RenderJSON(stdout, session)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	cmd.Flags().BoolVar(&allTurns, "all-turns", false, "show every turn for the session")
+	cmd.Flags().IntVar(&turn, "turn", 0, "show a single turn by sequence number")
+	return cmd
 }

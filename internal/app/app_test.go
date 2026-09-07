@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
 	"github.com/thanhpham0406/tok-doctor/internal/config"
+	"github.com/thanhpham0406/tok-doctor/internal/model"
 	"github.com/thanhpham0406/tok-doctor/internal/source"
 )
 
@@ -160,5 +162,86 @@ func copyTestFixture(t *testing.T, src, dst string) {
 	}
 	if err := os.WriteFile(dst, data, 0o600); err != nil {
 		t.Fatalf("write fixture %s: %v", dst, err)
+	}
+}
+
+func TestInspectResolvesByFullID(t *testing.T) {
+	sessions := []model.Session{
+		{ID: "abc123full", Source: "codex"},
+		{ID: "xyz789full", Source: "claude"},
+	}
+	got, err := pickSessionByID(sessions, "abc123full")
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if got.ID != "abc123full" {
+		t.Fatalf("session ID = %q, want abc123full", got.ID)
+	}
+}
+
+func TestInspectResolvesByUniqueShortPrefix(t *testing.T) {
+	sessions := []model.Session{
+		{ID: "abc123full-aaaa", Source: "codex"},
+		{ID: "xyz789full-bbbb", Source: "claude"},
+	}
+	got, err := pickSessionByID(sessions, "abc123full")
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if got.ID != "abc123full-aaaa" {
+		t.Fatalf("session ID = %q, want abc123full-aaaa", got.ID)
+	}
+}
+
+func TestInspectUnknownReturnsNotFound(t *testing.T) {
+	sessions := []model.Session{
+		{ID: "abc"},
+		{ID: "def"},
+	}
+	_, err := pickSessionByID(sessions, "zzzz")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrInspectSessionNotFound) {
+		t.Fatalf("error = %v, want ErrInspectSessionNotFound", err)
+	}
+}
+
+func TestInspectAmbiguousPrefixReturnsError(t *testing.T) {
+	sessions := []model.Session{
+		{ID: "abc123"},
+		{ID: "abc456"},
+	}
+	_, err := pickSessionByID(sessions, "abc")
+	if err == nil {
+		t.Fatal("expected ambiguous error")
+	}
+	if !errors.Is(err, ErrInspectAmbiguousSession) {
+		t.Fatalf("error = %v, want ErrInspectAmbiguousSession", err)
+	}
+}
+
+func TestInspectEmptyIDReturnsNotFound(t *testing.T) {
+	sessions := []model.Session{{ID: "abc"}}
+	_, err := pickSessionByID(sessions, "")
+	if err == nil {
+		t.Fatal("expected error for empty id")
+	}
+	if !errors.Is(err, ErrInspectSessionNotFound) {
+		t.Fatalf("error = %v, want ErrInspectSessionNotFound", err)
+	}
+}
+
+func TestInspectFullIDWinsOverPrefix(t *testing.T) {
+	sessions := []model.Session{
+		{ID: "abc123"},
+		{ID: "abc456"},
+	}
+	got, err := pickSessionByID(sessions, "abc123")
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if got.ID != "abc123" {
+		t.Fatalf("session ID = %q, want abc123 (exact match)", got.ID)
 	}
 }

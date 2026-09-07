@@ -278,3 +278,66 @@ func TestHasPositiveUsageDistinguishesMeasuredZeroFromMissing(t *testing.T) {
 		t.Fatal("positive snapshot should be positive")
 	}
 }
+
+func TestParseSessionDedupesByMessageID(t *testing.T) {
+	session, err := ParseSession(fixturePath(t, "duplicate-message-id-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(session.Invocations) != 2 {
+		t.Fatalf("invocations = %d, want 2 (duplicate message.id must collapse)", len(session.Invocations))
+	}
+	if session.Usage.Input != 3000 {
+		t.Fatalf("session input = %d, want 3000 (1000+2000, duplicates not summed)", session.Usage.Input)
+	}
+	if session.duplicates != 1 {
+		t.Fatalf("duplicates = %d, want 1", session.duplicates)
+	}
+}
+
+func TestParseSessionSameTotalsDifferentIDsStaySeparate(t *testing.T) {
+	session, err := ParseSession(fixturePath(t, "same-totals-different-ids-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(session.Invocations) != 2 {
+		t.Fatalf("invocations = %d, want 2 (token equality must not drive dedupe)", len(session.Invocations))
+	}
+	if session.Usage.Input != 1000 {
+		t.Fatalf("session input = %d, want 1000 (sum of two distinct invocations)", session.Usage.Input)
+	}
+}
+
+func TestParseSessionConflictDuplicateMarkedNotSilentlyPicked(t *testing.T) {
+	session, err := ParseSession(fixturePath(t, "conflict-duplicate-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(session.Invocations) != 1 {
+		t.Fatalf("invocations = %d, want 1 (same message.id)", len(session.Invocations))
+	}
+	if !session.Invocations[0].Conflict {
+		t.Fatalf("conflict flag = false, want true when duplicate usage differs")
+	}
+	if session.conflicts != 1 {
+		t.Fatalf("conflicts counter = %d, want 1", session.conflicts)
+	}
+}
+
+func TestParseSessionTurnIDUsesMessageID(t *testing.T) {
+	session, err := ParseSession(fixturePath(t, "duplicate-message-id-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(session.Invocations) != 2 {
+		t.Fatalf("invocations = %d, want 2", len(session.Invocations))
+	}
+	for _, inv := range session.Invocations {
+		if inv.ID == "" {
+			t.Fatalf("invocation id = empty, want authoritative message.id when present")
+		}
+	}
+	if session.Invocations[0].ID != "msg_aaa" || session.Invocations[1].ID != "msg_bbb" {
+		t.Fatalf("invocation ids = %v, want msg_aaa, msg_bbb", []string{session.Invocations[0].ID, session.Invocations[1].ID})
+	}
+}

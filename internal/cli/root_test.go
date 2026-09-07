@@ -419,3 +419,129 @@ func withCLIFixtureHome(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 }
+
+func TestInspectCommandAppearsInHelp(t *testing.T) {
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute help: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "inspect") {
+		t.Fatalf("help = %q, want inspect subcommand listed", got)
+	}
+}
+
+func TestInspectCommandRequiresExactlyOneArg(t *testing.T) {
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"inspect"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when no id provided")
+	}
+}
+
+func TestInspectCommandFullID(t *testing.T) {
+	withCLIFixtureHome(t)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"inspect", "sess-1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute inspect: %v", err)
+	}
+	got := stdout.String()
+	for _, want := range []string{"Session sess-1", "Source          codex", "Model calls"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestInspectCommandShortPrefix(t *testing.T) {
+	withCLIFixtureHome(t)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"inspect", "sess-2"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute inspect: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "sess-2") {
+		t.Fatalf("output = %q, want sess-2", got)
+	}
+}
+
+func TestInspectCommandUnknownSession(t *testing.T) {
+	withCLIFixtureHome(t)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"inspect", "zzznotreal"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for unknown session")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("error = %q, want 'not found'", err.Error())
+	}
+}
+
+func TestInspectCommandAmbiguousPrefix(t *testing.T) {
+	withCLIFixtureHome(t)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"inspect", "sess"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for ambiguous session id")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("error = %q, want 'ambiguous'", err.Error())
+	}
+}
+
+func TestInspectCommandJSONOutput(t *testing.T) {
+	withCLIFixtureHome(t)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"inspect", "sess-2", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute inspect json: %v", err)
+	}
+
+	var decoded struct {
+		Session struct {
+			ID     string       `json:"id"`
+			Source string       `json:"source"`
+			Usage  model.Usage  `json:"usage"`
+			Turns  []model.Turn `json:"turns"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode json: %v\n%s", err, stdout.String())
+	}
+	if decoded.Session.ID != "sess-2" {
+		t.Fatalf("session.id = %q, want sess-2", decoded.Session.ID)
+	}
+	if decoded.Session.Source != "codex" {
+		t.Fatalf("session.source = %q, want codex", decoded.Session.Source)
+	}
+	if decoded.Session.Usage.Total != 4450 {
+		t.Fatalf("usage.total = %d, want 4450", decoded.Session.Usage.Total)
+	}
+	if len(decoded.Session.Turns) != 3 {
+		t.Fatalf("turns = %d, want 3", len(decoded.Session.Turns))
+	}
+	if strings.Contains(stdout.String(), `"total": "`) {
+		t.Fatalf("json output has string total: %s", stdout.String())
+	}
+}
