@@ -1,0 +1,39 @@
+version: 2
+
+project_name: tok
+
+before:
+  hooks:
+    - go mod tidy
+    - npm --prefix ui install
+    - npm --prefix ui run build
+
+builds:
+  - id: tok
+    main: ./cmd/tok
+    binary: tok
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/thanhpham0406/tok-doctor/internal/cli.version={{.Version}} -X github.com/thanhpham0406/tok-doctor/internal/cli.commit={{.Commit}} -X github.com/thanhpham0406/tok-doctor/internal/cli.date={{.Date}}
+
+archives:
+  - formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
