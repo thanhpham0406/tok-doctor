@@ -6,12 +6,12 @@ type UsageSnapshot struct {
 	Input     int64
 	Cached    int64
 	Output    int64
-	Reasoning int64
+	Reasoning *int64
 	Total     int64
 }
 
 func (s UsageSnapshot) ToModelUsage() model.Usage {
-	if s.Input == 0 && s.Cached == 0 && s.Output == 0 && s.Reasoning == 0 && s.Total == 0 {
+	if s.Input == 0 && s.Cached == 0 && s.Output == 0 && s.Total == 0 && s.Reasoning == nil {
 		return model.Usage{}
 	}
 	return model.Usage{
@@ -25,13 +25,36 @@ func (s UsageSnapshot) ToModelUsage() model.Usage {
 }
 
 func SumSnapshots(snaps []UsageSnapshot) model.Usage {
-	var total UsageSnapshot
+	var (
+		totalInput     int64
+		totalCached    int64
+		totalOutput    int64
+		totalTotal     int64
+		totalReasoning *int64
+	)
 	for _, s := range snaps {
-		total.Input += s.Input
-		total.Cached += s.Cached
-		total.Output += s.Output
-		total.Reasoning += s.Reasoning
-		total.Total += s.Total
+		totalInput += s.Input
+		totalCached += s.Cached
+		totalOutput += s.Output
+		totalTotal += s.Total
+		if s.Reasoning != nil {
+			if totalReasoning == nil {
+				v := *s.Reasoning
+				totalReasoning = &v
+			} else {
+				*totalReasoning += *s.Reasoning
+			}
+		}
 	}
-	return total.ToModelUsage()
+	if totalInput == 0 && totalCached == 0 && totalOutput == 0 && totalTotal == 0 && totalReasoning == nil {
+		return model.Usage{}
+	}
+	return model.Usage{
+		Input:      totalInput,
+		Cached:     totalCached,
+		Output:     totalOutput,
+		Reasoning:  totalReasoning,
+		Total:      totalTotal,
+		Confidence: model.ConfidenceMeasured,
+	}
 }

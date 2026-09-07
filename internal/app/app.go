@@ -193,8 +193,5 @@ func (a *App) validateCLIOverride(name string, override source.Override) error {
 }
 
 func normalizeName(name string) string {
-	if strings.EqualFold(name, "router9") {
-		return "9router"
-	}
 	return strings.ToLower(name)
 }

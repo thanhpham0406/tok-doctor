@@ -28,7 +28,7 @@ type Usage struct {
 	Input      int64      `json:"input"`
 	Cached     int64      `json:"cached"`
 	Output     int64      `json:"output"`
-	Reasoning  int64      `json:"reasoning"`
+	Reasoning  *int64     `json:"reasoning,omitempty"`
 	Total      int64      `json:"total"`
 	Confidence Confidence `json:"confidence,omitempty"`
 }

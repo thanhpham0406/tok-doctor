@@ -12,7 +12,7 @@ Keep these principles in mind before making changes:
 - Keep dependencies minimal.
 - Use the Go standard library when it is sufficient.
 - Keep platform-specific logic inside source adapters.
-- Keep analysis logic independent from Codex, 9Router, Antigravity, Kiro, Cursor, Claude, or any other source format.
+- Keep analysis logic independent from Codex, Claude Code, 9Router, or any other source format.
 - Prefer deterministic analysis over LLM-based analysis.
 - Preserve local-first behavior and privacy guarantees.
 - Avoid speculative abstractions.
@@ -150,11 +150,8 @@ Place code close to the responsibility it belongs to.
 TokDoctor initially targets:
 
 - Codex
+- Claude Code
 - 9Router
-- Antigravity
-- Kiro
-- Cursor
-- Claude
 
 Additional platforms should be added based on real community demand.
 
@@ -214,7 +211,7 @@ A rule should provide:
 
 Rules should be deterministic whenever possible.
 
-Do not make a rule depend directly on raw Codex JSONL, Cursor storage, Claude session files, 9Router APIs, or other source-specific formats.
+Do not make a rule depend directly on raw Codex JSONL, Claude session files, 9Router APIs, or other source-specific formats.
 
 See `docs/rule-spec.md` for the rule contract.
 

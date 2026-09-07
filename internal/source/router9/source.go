@@ -15,7 +15,7 @@ func New() *Source {
 }
 
 func (s *Source) Name() string {
-	return "9router"
+	return "router9"
 }
 
 func (s *Source) DisplayName() string {

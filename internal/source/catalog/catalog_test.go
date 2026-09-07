@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/thanhpham0406/tok-doctor/internal/config"
@@ -13,8 +14,14 @@ import (
 func TestAllSourcesRegistered(t *testing.T) {
 	result := Builtins().All(context.Background(), config.Config{Sources: map[string]config.Source{}})
 
-	if len(result.Sources) != 6 {
-		t.Fatalf("sources len = %d, want 6", len(result.Sources))
+	if len(result.Sources) != 3 {
+		t.Fatalf("sources len = %d, want 3", len(result.Sources))
+	}
+	names := Builtins().Names()
+	for _, want := range []string{"codex", "claude", "router9"} {
+		if !slices.Contains(names, want) {
+			t.Fatalf("source names = %v, want %s", names, want)
+		}
 	}
 }
 

@@ -17,6 +17,7 @@ func (s UsageSnapshot) ToModelUsage() model.Usage {
 		Input:      s.Input,
 		Cached:     s.Cached,
 		Output:     s.Output,
+		Reasoning:  nil,
 		Total:      s.Total,
 		Confidence: model.ConfidenceMeasured,
 	}

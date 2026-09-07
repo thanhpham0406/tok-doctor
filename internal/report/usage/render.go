@@ -37,10 +37,17 @@ func renderEntry(w io.Writer, entry model.UsageEntry) error {
 		FormatTokenCount(entry.Usage.Input),
 		FormatTokenCount(entry.Usage.Cached),
 		FormatTokenCount(entry.Usage.Output),
-		FormatTokenCount(entry.Usage.Reasoning),
+		FormatReasoning(entry.Usage.Reasoning),
 		FormatTokenCount(entry.Usage.Total),
 		entry.Usage.Confidence)
 	return err
+}
+
+func FormatReasoning(r *int64) string {
+	if r == nil {
+		return "-"
+	}
+	return FormatTokenCount(*r)
 }
 
 func FormatTokenCount(n int64) string {

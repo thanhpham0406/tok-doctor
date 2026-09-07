@@ -94,3 +94,17 @@ func TestSumSnapshotsAggregates(t *testing.T) {
 		t.Fatalf("usage = %+v, want input=30 cached=7 output=7 total=44", u)
 	}
 }
+
+func TestSnapshotHasNoReasoningField(t *testing.T) {
+	snap, err := ParseSessionUsage(fixturePath(t, "basic-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	u := snap.ToModelUsage()
+	if u.Reasoning != nil {
+		t.Fatalf("reasoning = %v, want nil (Claude session format does not expose a separate reasoning field)", *u.Reasoning)
+	}
+	if u.Output != 200 {
+		t.Fatalf("output = %d, want 200 from source output_tokens", u.Output)
+	}
+}

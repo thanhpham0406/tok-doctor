@@ -19,11 +19,8 @@ Current scaffold includes:
 Initial platform targets:
 
 * Codex
+* Claude Code
 * 9Router
-* Antigravity
-* Kiro
-* Cursor
-* Claude
 
 ## Requirements
 

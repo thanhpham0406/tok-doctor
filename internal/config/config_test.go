@@ -13,8 +13,8 @@ func TestSetLoadResetSource(t *testing.T) {
 	if err := store.SetSource("codex", Source{Path: "/tmp/codex"}); err != nil {
 		t.Fatalf("SetSource codex: %v", err)
 	}
-	if err := store.SetSource("cursor", Source{Path: "/tmp/cursor"}); err != nil {
-		t.Fatalf("SetSource cursor: %v", err)
+	if err := store.SetSource("claude", Source{Path: "/tmp/claude"}); err != nil {
+		t.Fatalf("SetSource claude: %v", err)
 	}
 
 	cfg, err := store.Load()
@@ -36,7 +36,7 @@ func TestSetLoadResetSource(t *testing.T) {
 	if _, ok := cfg.Sources["codex"]; ok {
 		t.Fatal("codex config was not reset")
 	}
-	if cfg.Sources["cursor"].Path != "/tmp/cursor" {
+	if cfg.Sources["claude"].Path != "/tmp/claude" {
 		t.Fatal("reset removed unrelated source config")
 	}
 }
@@ -46,7 +46,7 @@ func TestLoadQuotedValues(t *testing.T) {
 	data := `[sources.codex]
 path = "/tmp/codex sessions"
 
-[sources.9router]
+[sources.router9]
 endpoint = "http://127.0.0.1:30128"
 `
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {

@@ -28,7 +28,7 @@ Rules may detect problems related to:
 
 Rules must not:
 
-- parse raw Codex, Cursor, Claude, Kiro, Antigravity, or 9Router formats
+- parse raw Codex, Claude, or 9Router formats
 - read platform-specific source files directly
 - mutate original session data
 - silently modify agent configuration

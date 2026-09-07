@@ -71,11 +71,8 @@ Initial sources:
 
 ```text
 Codex
+Claude Code
 9Router
-Antigravity
-Kiro
-Cursor
-Claude
 ```
 
 Additional sources should be added based on real community demand.
@@ -109,7 +106,6 @@ The following dependencies are not allowed:
 
 ```text
 model   -> codex
-model   -> cursor
 rule    -> codex parser
 rule    -> web UI
 analyze -> terminal renderer
@@ -128,11 +124,8 @@ Examples:
 
 ```text
 CodexAdapter
-9RouterAdapter
-AntigravityAdapter
-KiroAdapter
-CursorAdapter
 ClaudeAdapter
+9RouterAdapter
 ```
 
 An adapter may:
@@ -216,10 +209,8 @@ The canonical model must not contain source-specific concepts such as:
 
 ```text
 Codex rollout JSONL record types
-Cursor internal database tables
 Claude-specific session paths
 9Router HTTP endpoint shapes
-Kiro-specific storage formats
 ```
 
 Those details belong in adapters.
@@ -453,9 +444,6 @@ tokdoctor/
 │   ├── source/
 │   │   ├── codex/
 │   │   ├── router9/
-│   │   ├── antigravity/
-│   │   ├── kiro/
-│   │   ├── cursor/
 │   │   └── claude/
 │   │
 │   ├── analyze/

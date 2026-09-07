@@ -139,33 +139,18 @@ func TestUsageCommandMissingSourceFlag(t *testing.T) {
 	}
 }
 
-func TestUsageCommandUnsupportedSource(t *testing.T) {
+func TestUsageCommandUnsupportedRouter9(t *testing.T) {
 	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
 
 	var stdout bytes.Buffer
 	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
-	cmd.SetArgs([]string{"usage", "--source", "cursor"})
+	cmd.SetArgs([]string{"usage", "--source", "router9"})
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected error for unsupported source")
+		t.Fatal("expected error for router9")
 	}
-	if !strings.Contains(err.Error(), "usage not supported") {
-		t.Fatalf("error = %q, want unsupported message", err.Error())
-	}
-}
-
-func TestUsageCommandUnsupportedRouter9Alias(t *testing.T) {
-	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
-
-	var stdout bytes.Buffer
-	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
-	cmd.SetArgs([]string{"usage", "--source", "9router"})
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error for 9router alias")
-	}
-	if !strings.Contains(err.Error(), "usage not supported for 9router") {
-		t.Fatalf("error = %q, want 9router unsupported message", err.Error())
+	if !strings.Contains(err.Error(), "usage not supported for router9") {
+		t.Fatalf("error = %q, want router9 unsupported message", err.Error())
 	}
 }
 

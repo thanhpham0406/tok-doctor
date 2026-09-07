@@ -28,8 +28,59 @@ func TestParseSessionUsageTakesFinalSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if snap.Input != 2400 || snap.Cached != 800 || snap.Output != 1100 || snap.Reasoning != 150 || snap.Total != 4450 {
+	if snap.Input != 2400 || snap.Cached != 800 || snap.Output != 1100 || snap.Total != 4450 {
 		t.Fatalf("snapshot = %+v, want final cumulative totals", snap)
+	}
+	if snap.Reasoning == nil || *snap.Reasoning != 150 {
+		t.Fatalf("reasoning = %v, want pointer to 150", snap.Reasoning)
+	}
+}
+
+func TestParseSessionUsageCumulativeReasoningNotDoubled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	lines := []string{
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":100,"reasoning_output_tokens":100,"total_tokens":200},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":100,"reasoning_output_tokens":100,"total_tokens":200}}}}`,
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":300,"reasoning_output_tokens":250,"total_tokens":600},"last_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":200,"reasoning_output_tokens":150,"total_tokens":400}}}}`,
+	}
+	if err := os.WriteFile(path, []byte(lines[0]+"\n"+lines[1]+"\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	snap, err := ParseSessionUsage(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if snap.Reasoning == nil || *snap.Reasoning != 250 {
+		t.Fatalf("reasoning = %v, want pointer to 250 (final cumulative, not sum 350)", snap.Reasoning)
+	}
+	if snap.Total != 600 {
+		t.Fatalf("total = %d, want 600 (final cumulative)", snap.Total)
+	}
+}
+
+func TestParseSessionUsageMissingReasoningIsNil(t *testing.T) {
+	snap, err := ParseSessionUsage(fixturePath(t, "missing-reasoning-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if snap.Reasoning != nil {
+		t.Fatalf("reasoning = %v, want nil when source did not expose reasoning_output_tokens", *snap.Reasoning)
+	}
+	if snap.Total != 800 {
+		t.Fatalf("total = %d, want 800", snap.Total)
+	}
+}
+
+func TestParseSessionUsageExplicitZeroReasoning(t *testing.T) {
+	snap, err := ParseSessionUsage(fixturePath(t, "basic-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if snap.Reasoning == nil {
+		t.Fatal("reasoning = nil, want pointer to 0 (source reported explicit 0)")
+	}
+	if *snap.Reasoning != 0 {
+		t.Fatalf("reasoning = %d, want 0", *snap.Reasoning)
 	}
 }
 
@@ -75,9 +126,13 @@ func TestParseSessionUsageEmptyFile(t *testing.T) {
 }
 
 func TestUsageSnapshotToModelUsage(t *testing.T) {
-	u := UsageSnapshot{Input: 10, Cached: 5, Output: 3, Total: 18}.ToModelUsage()
+	r := int64(10)
+	u := UsageSnapshot{Input: 10, Cached: 5, Output: 3, Reasoning: &r, Total: 18}.ToModelUsage()
 	if u.Input != 10 || u.Cached != 5 || u.Output != 3 || u.Total != 18 {
 		t.Fatalf("usage = %+v", u)
+	}
+	if u.Reasoning == nil || *u.Reasoning != 10 {
+		t.Fatalf("reasoning = %v, want pointer to 10", u.Reasoning)
 	}
 	if u.Confidence != model.ConfidenceMeasured {
 		t.Fatalf("confidence = %q, want measured", u.Confidence)
@@ -91,6 +146,21 @@ func TestUsageSnapshotZeroHasEmptyConfidence(t *testing.T) {
 	}
 }
 
+func TestUsageSnapshotMissingReasoningStaysMissing(t *testing.T) {
+	u := UsageSnapshot{Input: 10, Cached: 5, Output: 3, Total: 18}.ToModelUsage()
+	if u.Reasoning != nil {
+		t.Fatalf("reasoning = %v, want nil when snapshot did not expose reasoning", *u.Reasoning)
+	}
+}
+
+func TestUsageSnapshotExplicitZeroReasoningPreserved(t *testing.T) {
+	zero := int64(0)
+	u := UsageSnapshot{Input: 10, Cached: 5, Output: 3, Reasoning: &zero, Total: 18}.ToModelUsage()
+	if u.Reasoning == nil || *u.Reasoning != 0 {
+		t.Fatalf("reasoning = %v, want pointer to 0 (explicit zero)", u.Reasoning)
+	}
+}
+
 func TestSumSnapshotsAggregates(t *testing.T) {
 	snaps := []UsageSnapshot{
 		{Input: 10, Cached: 5, Output: 3, Total: 18},
@@ -99,5 +169,33 @@ func TestSumSnapshotsAggregates(t *testing.T) {
 	u := SumSnapshots(snaps)
 	if u.Input != 30 || u.Cached != 7 || u.Output != 7 || u.Total != 44 {
 		t.Fatalf("usage = %+v, want input=30 cached=7 output=7 total=44", u)
+	}
+}
+
+func TestSumSnapshotsAggregatesReasoning(t *testing.T) {
+	r1 := int64(4)
+	r2 := int64(6)
+	snaps := []UsageSnapshot{
+		{Input: 10, Cached: 5, Output: 3, Reasoning: &r1, Total: 22},
+		{Input: 20, Cached: 2, Output: 4, Reasoning: &r2, Total: 32},
+	}
+	u := SumSnapshots(snaps)
+	if u.Reasoning == nil || *u.Reasoning != 10 {
+		t.Fatalf("reasoning = %v, want pointer to 10", u.Reasoning)
+	}
+	if u.Total != 54 {
+		t.Fatalf("total = %d, want 54", u.Total)
+	}
+}
+
+func TestSumSnapshotsPreservesReasoningAvailability(t *testing.T) {
+	r := int64(50)
+	snaps := []UsageSnapshot{
+		{Input: 10, Cached: 5, Output: 3, Total: 18},
+		{Input: 20, Cached: 2, Output: 4, Reasoning: &r, Total: 26},
+	}
+	u := SumSnapshots(snaps)
+	if u.Reasoning == nil || *u.Reasoning != 50 {
+		t.Fatalf("reasoning = %v, want pointer to 50 (single source reported it)", u.Reasoning)
 	}
 }

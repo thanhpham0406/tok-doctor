@@ -13,18 +13,18 @@ type tokenCountEvent struct {
 		Type string `json:"type"`
 		Info struct {
 			TotalTokenUsage struct {
-				InputTokens       int64 `json:"input_tokens"`
-				CachedInputTokens int64 `json:"cached_input_tokens"`
-				OutputTokens      int64 `json:"output_tokens"`
-				ReasoningTokens   int64 `json:"reasoning_tokens"`
-				TotalTokens       int64 `json:"total_tokens"`
+				InputTokens           int64  `json:"input_tokens"`
+				CachedInputTokens     int64  `json:"cached_input_tokens"`
+				OutputTokens          int64  `json:"output_tokens"`
+				ReasoningOutputTokens *int64 `json:"reasoning_output_tokens"`
+				TotalTokens           int64  `json:"total_tokens"`
 			} `json:"total_token_usage"`
 			LastTokenUsage struct {
-				InputTokens       int64 `json:"input_tokens"`
-				CachedInputTokens int64 `json:"cached_input_tokens"`
-				OutputTokens      int64 `json:"output_tokens"`
-				ReasoningTokens   int64 `json:"reasoning_tokens"`
-				TotalTokens       int64 `json:"total_tokens"`
+				InputTokens           int64  `json:"input_tokens"`
+				CachedInputTokens     int64  `json:"cached_input_tokens"`
+				OutputTokens          int64  `json:"output_tokens"`
+				ReasoningOutputTokens *int64 `json:"reasoning_output_tokens"`
+				TotalTokens           int64  `json:"total_tokens"`
 			} `json:"last_token_usage"`
 		} `json:"info"`
 	} `json:"payload"`
@@ -50,7 +50,6 @@ func parseSessionUsage(r io.Reader) (UsageSnapshot, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
 	var final UsageSnapshot
-	seen := false
 	for scanner.Scan() {
 		raw := scanner.Bytes()
 		if len(raw) == 0 {
@@ -64,9 +63,8 @@ func parseSessionUsage(r io.Reader) (UsageSnapshot, error) {
 			continue
 		}
 		snap := snapshotFromEvent(event)
-		if !seen || snap.Total > final.Total {
+		if snap.Total >= final.Total {
 			final = snap
-			seen = true
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -81,7 +79,7 @@ func snapshotFromEvent(e tokenCountEvent) UsageSnapshot {
 		Input:     t.InputTokens,
 		Cached:    t.CachedInputTokens,
 		Output:    t.OutputTokens,
-		Reasoning: t.ReasoningTokens,
+		Reasoning: t.ReasoningOutputTokens,
 		Total:     t.TotalTokens,
 	}
 }

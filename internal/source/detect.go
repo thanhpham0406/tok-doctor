@@ -250,11 +250,14 @@ func ProbeEndpoint(ctx context.Context, name, displayName, endpoint string, orig
 	defer resp.Body.Close()
 
 	result.Evidence[0].OK = true
-	if strings.Contains(strings.ToLower(resp.Header.Get("Server")), name) ||
-		strings.Contains(strings.ToLower(resp.Header.Get("X-Source")), name) {
-		result.Status = StatusReady
-		result.Confidence = ConfidenceHigh
-		return result
+	server := strings.ToLower(resp.Header.Get("Server"))
+	sourceHeader := strings.ToLower(resp.Header.Get("X-Source"))
+	for _, signature := range []string{strings.ToLower(name), strings.ToLower(displayName)} {
+		if strings.Contains(server, signature) || strings.Contains(sourceHeader, signature) {
+			result.Status = StatusReady
+			result.Confidence = ConfidenceHigh
+			return result
+		}
 	}
 
 	result.Status = StatusInstalled

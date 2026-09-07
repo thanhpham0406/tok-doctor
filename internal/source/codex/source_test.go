@@ -105,9 +105,12 @@ func TestSourceUsageAggregatesAcrossFixtures(t *testing.T) {
 	wantReasoning := int64(150)
 	wantTotal := int64(6400)
 	if usage.Input != wantInput || usage.Cached != wantCached || usage.Output != wantOutput ||
-		usage.Reasoning != wantReasoning || usage.Total != wantTotal {
-		t.Fatalf("usage = %+v, want input=%d cached=%d output=%d reasoning=%d total=%d",
-			usage, wantInput, wantCached, wantOutput, wantReasoning, wantTotal)
+		usage.Total != wantTotal {
+		t.Fatalf("usage = %+v, want input=%d cached=%d output=%d total=%d",
+			usage, wantInput, wantCached, wantOutput, wantTotal)
+	}
+	if usage.Reasoning == nil || *usage.Reasoning != wantReasoning {
+		t.Fatalf("reasoning = %v, want pointer to %d", usage.Reasoning, wantReasoning)
 	}
 	if usage.Confidence != model.ConfidenceMeasured {
 		t.Fatalf("confidence = %q, want measured", usage.Confidence)

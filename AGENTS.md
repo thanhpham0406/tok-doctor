@@ -16,7 +16,7 @@ The project analyzes local agent data, attributes token usage, detects waste, an
 - Follow idiomatic Go.
 - Do not introduce abstractions before they are needed.
 - Keep platform-specific logic inside source adapters.
-- Core analysis must not depend on Codex, 9Router, Antigravity, Kiro, Cursor, Claude, or any other platform-specific format.
+- Core analysis must not depend on Codex, Claude Code, 9Router, or any other platform-specific format.
 - Prefer deterministic analysis over LLM-based analysis.
 - Provider-reported token usage is authoritative when available.
 - Estimated values must be clearly marked as estimates.
@@ -28,11 +28,8 @@ The project analyzes local agent data, attributes token usage, detects waste, an
 The initial supported platforms are:
 
 - Codex
+- Claude Code
 - 9Router
-- Antigravity
-- Kiro
-- Cursor
-- Claude
 
 Additional sources should be added based on real community demand.
 
@@ -97,7 +94,7 @@ Core concepts include:
 - Finding
 - Evidence
 
-The canonical model must never depend on raw Codex JSONL, Cursor storage, Claude session formats, 9Router APIs, or any other platform-specific representation.
+The canonical model must never depend on raw Codex JSONL, Claude session formats, 9Router APIs, or any other platform-specific representation.
 
 ### Analyzer
 

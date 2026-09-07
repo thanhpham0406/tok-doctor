@@ -79,19 +79,14 @@ func TestUsageUnknownSource(t *testing.T) {
 	}
 }
 
-func TestUsageUnsupportedSource(t *testing.T) {
-	app := NewWithStore(config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml")))
-	_, err := app.Usage(context.Background(), "cursor")
-	if err == nil {
-		t.Fatal("expected error for unsupported source")
-	}
-}
-
-func TestUsageUnsupportedRouter9Alias(t *testing.T) {
+func TestUsageUnsupportedRouter9(t *testing.T) {
 	app := NewWithStore(config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml")))
 	_, err := app.Usage(context.Background(), "router9")
 	if err == nil {
-		t.Fatal("expected error for 9router alias")
+		t.Fatal("expected error for router9")
+	}
+	if err.Error() != "usage not supported for router9" {
+		t.Fatalf("error = %q, want router9 unsupported", err.Error())
 	}
 }
 
@@ -109,8 +104,5 @@ func TestUsageAllIncludesUsageCapableSources(t *testing.T) {
 	}
 	if !slices.Contains(names, "codex") || !slices.Contains(names, "claude") {
 		t.Fatalf("sources = %v, want codex and claude", names)
-	}
-	if slices.Contains(names, "cursor") {
-		t.Fatalf("sources = %v, did not want unsupported cursor", names)
 	}
 }

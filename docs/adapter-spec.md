@@ -15,11 +15,8 @@ Adapters must not contain generic analysis or optimization logic.
 The initial built-in adapters are:
 
 - Codex
+- Claude Code
 - 9Router
-- Antigravity
-- Kiro
-- Cursor
-- Claude
 
 Additional adapters should be added based on real community demand.
 
@@ -75,11 +72,8 @@ Examples of platform-specific details that must remain inside adapters:
 
 ```text
 Codex rollout JSONL event names
-Cursor internal database structures
 Claude session file paths
 9Router API response shapes
-Kiro-specific storage formats
-Antigravity-specific telemetry formats
 ```
 
 ## Conceptual Interface
@@ -121,9 +115,6 @@ check expected session directory
 
 9Router:
 check local configuration or expected local service
-
-Cursor:
-check known local storage location
 
 Claude:
 check known local session storage
@@ -387,8 +378,8 @@ For example:
 
 ```text
 Codex may expose detailed local execution events.
+Claude Code may expose local session usage.
 9Router may expose downstream provider usage.
-Cursor may expose a different telemetry surface.
 ```
 
 If data is unavailable:
@@ -477,7 +468,7 @@ errors.As
 Wrap errors with context:
 
 ```go
-return fmt.Errorf("read cursor session %s: %w", ref.ID, err)
+return fmt.Errorf("read claude session %s: %w", ref.ID, err)
 ```
 
 Do not expose secrets through error messages.
@@ -681,9 +672,6 @@ Preferred package names:
 ```text
 codex
 router9
-antigravity
-kiro
-cursor
 claude
 ```
 
@@ -692,7 +680,6 @@ Avoid names such as:
 ```text
 codexadapter
 codex_impl
-cursor_service
 claude_manager
 ```
 

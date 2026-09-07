@@ -8,11 +8,8 @@ import (
 
 	"github.com/thanhpham0406/tok-doctor/internal/config"
 	"github.com/thanhpham0406/tok-doctor/internal/source"
-	"github.com/thanhpham0406/tok-doctor/internal/source/antigravity"
 	"github.com/thanhpham0406/tok-doctor/internal/source/claude"
 	"github.com/thanhpham0406/tok-doctor/internal/source/codex"
-	"github.com/thanhpham0406/tok-doctor/internal/source/cursor"
-	"github.com/thanhpham0406/tok-doctor/internal/source/kiro"
 	"github.com/thanhpham0406/tok-doctor/internal/source/router9"
 )
 
@@ -23,11 +20,8 @@ type Registry struct {
 func Builtins() Registry {
 	return Registry{detectors: []source.Detector{
 		codex.New(),
-		router9.New(),
-		cursor.New(),
 		claude.New(),
-		kiro.New(),
-		antigravity.New(),
+		router9.New(),
 	}}
 }
 
@@ -96,18 +90,11 @@ func (r Registry) find(name string) (source.Detector, error) {
 }
 
 func normalizeName(name string) string {
-	name = strings.ToLower(name)
-	if name == "router9" {
-		return "9router"
-	}
-	return name
+	return strings.ToLower(name)
 }
 
 func configOverride(cfg config.Config, name string) source.Override {
 	src := cfg.Sources[name]
-	if name == "9router" && src.Endpoint == "" {
-		src = cfg.Sources["router9"]
-	}
 	override := source.Override{Path: src.Path, Endpoint: src.Endpoint}
 	if override.Path != "" || override.Endpoint != "" {
 		override.Origin = source.OriginConfig
