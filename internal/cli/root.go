@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -9,7 +10,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/thanhpham0406/tok-doctor/internal/app"
 	reportjson "github.com/thanhpham0406/tok-doctor/internal/report/json"
+	reportsource "github.com/thanhpham0406/tok-doctor/internal/report/source"
 	"github.com/thanhpham0406/tok-doctor/internal/report/terminal"
+	"github.com/thanhpham0406/tok-doctor/internal/source"
 	"github.com/thanhpham0406/tok-doctor/internal/webui"
 )
 
@@ -36,11 +39,152 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer, logger *slog.
 	cmd.AddCommand(newVersionCommand(stdout))
 	cmd.AddCommand(newDoctorCommand(ctx, stdout, tok))
 	cmd.AddCommand(newUICommand(ctx, stdout, logger, tok))
+	cmd.AddCommand(newSourcesCommand(ctx, stdout, tok))
+	cmd.AddCommand(newSourceCommand(ctx, stdout, tok))
 
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
 
 	return cmd
+}
+
+func newSourcesCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
+	var format string
+
+	cmd := &cobra.Command{
+		Use:   "sources",
+		Short: "List supported AI coding-agent sources",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := tok.Sources(ctx)
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return reportsource.RenderList(stdout, result)
+			case "json":
+				return writeJSON(stdout, result)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	return cmd
+}
+
+func newSourceCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "source",
+		Short: "Manage source detection configuration",
+	}
+	cmd.AddCommand(newSourceShowCommand(ctx, stdout, tok))
+	cmd.AddCommand(newSourceSetCommand(stdout, tok))
+	cmd.AddCommand(newSourceTestCommand(ctx, stdout, tok))
+	cmd.AddCommand(newSourceResetCommand(stdout, tok))
+	return cmd
+}
+
+func newSourceShowCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
+	var format string
+	var path string
+	var endpoint string
+
+	cmd := &cobra.Command{
+		Use:   "show <name>",
+		Short: "Show source detection details",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := tok.ShowSource(ctx, args[0], source.Override{Path: path, Endpoint: endpoint})
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return reportsource.RenderShow(stdout, result)
+			case "json":
+				return writeJSON(stdout, result)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	cmd.Flags().StringVar(&path, "path", "", "use a source path for this command only")
+	cmd.Flags().StringVar(&endpoint, "endpoint", "", "use a source endpoint for this command only")
+	return cmd
+}
+
+func newSourceSetCommand(stdout io.Writer, tok *app.App) *cobra.Command {
+	var path string
+	var endpoint string
+
+	cmd := &cobra.Command{
+		Use:   "set <name>",
+		Short: "Set a source location override",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := tok.SetSource(args[0], source.Override{Path: path, Endpoint: endpoint}); err != nil {
+				return err
+			}
+			_, err := fmt.Fprintf(stdout, "Updated %s source configuration.\n", args[0])
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "source data path")
+	cmd.Flags().StringVar(&endpoint, "endpoint", "", "source endpoint")
+	return cmd
+}
+
+func newSourceTestCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
+	var format string
+	var path string
+	var endpoint string
+
+	cmd := &cobra.Command{
+		Use:   "test <name>",
+		Short: "Test whether a source is usable",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := tok.TestSource(ctx, args[0], source.Override{Path: path, Endpoint: endpoint})
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return reportsource.RenderTest(stdout, result)
+			case "json":
+				return writeJSON(stdout, result)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	cmd.Flags().StringVar(&path, "path", "", "use a source path for this command only")
+	cmd.Flags().StringVar(&endpoint, "endpoint", "", "use a source endpoint for this command only")
+	return cmd
+}
+
+func newSourceResetCommand(stdout io.Writer, tok *app.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "reset <name>",
+		Short: "Reset a source override to auto-detection",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := tok.ResetSource(args[0]); err != nil {
+				return err
+			}
+			_, err := fmt.Fprintf(stdout, "Reset %s source configuration.\n", args[0])
+			return err
+		},
+	}
+}
+
+func writeJSON(w io.Writer, value any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(value)
 }
 
 func newVersionCommand(stdout io.Writer) *cobra.Command {
