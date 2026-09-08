@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,14 +58,22 @@ type Catalog struct {
 }
 
 type PricingProfile struct {
-	Provider      string      `json:"provider"`
-	SKU           string      `json:"sku"`
-	Model         string      `json:"model,omitempty"`
-	Aliases       []string    `json:"aliases,omitempty"`
-	Currency      string      `json:"currency"`
-	EffectiveFrom *time.Time  `json:"effective_from,omitempty"`
-	Rates         Rates       `json:"rates"`
-	Sources       []SourceRef `json:"sources,omitempty"`
+	Provider      string        `json:"provider"`
+	SKU           string        `json:"sku"`
+	Model         string        `json:"model,omitempty"`
+	Aliases       []string      `json:"aliases,omitempty"`
+	Currency      string        `json:"currency"`
+	EffectiveFrom *time.Time    `json:"effective_from,omitempty"`
+	Rates         Rates         `json:"rates"`
+	Tiers         []PricingTier `json:"tiers,omitempty"`
+	Sources       []SourceRef   `json:"sources,omitempty"`
+	CatalogSource CatalogSource `json:"-"`
+}
+
+type PricingTier struct {
+	Name            string `json:"name"`
+	UpToInputTokens *int64 `json:"up_to_input_tokens,omitempty"`
+	Rates           Rates  `json:"rates"`
 }
 
 type Rates struct {
@@ -200,6 +209,7 @@ type ProfileRef struct {
 	Provider      string     `json:"provider"`
 	SKU           string     `json:"sku"`
 	Model         string     `json:"model"`
+	Tier          string     `json:"tier,omitempty"`
 	Currency      string     `json:"currency"`
 	EffectiveFrom *time.Time `json:"effective_from,omitempty"`
 }
@@ -213,6 +223,8 @@ type MissingProfile struct {
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model"`
 	Count    int    `json:"count"`
+	Sessions int    `json:"sessions,omitempty"`
+	Turns    int    `json:"turns,omitempty"`
 }
 
 type BasisPoints int64
@@ -231,11 +243,25 @@ func DefaultStore(overridePath string) (Store, error) {
 	if err != nil {
 		return Store{}, fmt.Errorf("find user cache dir: %w", err)
 	}
+	if overridePath == "" {
+		overridePath, err = DefaultOverridePath()
+		if err != nil {
+			return Store{}, err
+		}
+	}
 	return NewStore(filepath.Join(dir, "tokdoctor", "pricing"), overridePath), nil
 }
 
 func DefaultRemoteURL() string {
 	return defaultRemoteCatalogURL
+}
+
+func DefaultOverridePath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("find user config dir: %w", err)
+	}
+	return filepath.Join(dir, "tokdoctor", "pricing-overrides.json"), nil
 }
 
 func DecodeCatalog(r io.Reader) (Catalog, error) {
@@ -275,21 +301,36 @@ func DefaultActiveCatalog(overridePath string) (ActiveCatalog, error) {
 }
 
 func (s Store) Active() (ActiveCatalog, error) {
-	if s.overridePath != "" {
-		catalog, err := readCatalogFile(s.overridePath)
-		if err != nil {
-			return ActiveCatalog{}, fmt.Errorf("read pricing override: %w", err)
-		}
-		return ActiveCatalog{Catalog: catalog, Source: SourceOverride, Meta: CatalogMeta{Version: catalog.Version}}, nil
-	}
-	if cached, meta, err := s.readCache(); err == nil {
-		return ActiveCatalog{Catalog: cached, Source: SourceCache, Meta: meta}, nil
-	}
 	embedded, err := EmbeddedCatalog()
 	if err != nil {
 		return ActiveCatalog{}, err
 	}
-	return ActiveCatalog{Catalog: embedded, Source: SourceEmbedded, Meta: CatalogMeta{Version: embedded.Version, URL: s.remoteURL}}, nil
+	setCatalogSource(&embedded, SourceEmbedded)
+
+	active := embedded
+	activeSource := SourceEmbedded
+	meta := CatalogMeta{Version: embedded.Version, URL: s.remoteURL}
+	if cached, cachedMeta, err := s.readCache(); err == nil {
+		setCatalogSource(&cached, SourceCache)
+		active = mergeCatalogs(embedded, cached)
+		activeSource = SourceCache
+		meta = cachedMeta
+	}
+
+	if s.overridePath != "" {
+		override, err := readCatalogFile(s.overridePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return ActiveCatalog{}, fmt.Errorf("read pricing override: %w", err)
+			}
+		} else {
+			setCatalogSource(&override, SourceOverride)
+			active = mergeCatalogs(active, override)
+			activeSource = SourceOverride
+			meta.Version = active.Version
+		}
+	}
+	return ActiveCatalog{Catalog: active, Source: activeSource, Meta: meta}, nil
 }
 
 func (s Store) Status() (Status, error) {
@@ -319,6 +360,54 @@ func (s Store) Show(modelName string) (ActiveCatalog, PricingProfile, bool, erro
 	}
 	profile, ok := active.Catalog.Resolve(modelName, nil)
 	return active, profile, ok, nil
+}
+
+func (s Store) AddOverride(profile PricingProfile, replace bool) (PricingProfile, error) {
+	profile.CatalogSource = ""
+	if err := profile.Validate(); err != nil {
+		return PricingProfile{}, err
+	}
+	catalog, err := s.readOverride()
+	if err != nil {
+		return PricingProfile{}, err
+	}
+	if catalog.Version == "" {
+		catalog.Version = "user-overrides"
+	}
+	if catalog.HasProviderProfile(profile.Provider, profile.SKU, profile.Model) {
+		if !replace {
+			return PricingProfile{}, fmt.Errorf("pricing override already exists for %s/%s", profile.Provider, profile.SKU)
+		}
+		catalog.Profiles = replaceProviderModel(catalog.Profiles, profile)
+	} else {
+		catalog.Profiles = append(catalog.Profiles, profile)
+	}
+	sortProfiles(catalog.Profiles)
+	data, err := json.MarshalIndent(catalog, "", "  ")
+	if err != nil {
+		return PricingProfile{}, fmt.Errorf("encode pricing override: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(s.overridePath), 0o755); err != nil {
+		return PricingProfile{}, fmt.Errorf("create pricing override dir: %w", err)
+	}
+	if err := atomicWritePerm(s.overridePath, append(data, '\n'), 0o600); err != nil {
+		return PricingProfile{}, err
+	}
+	return profile, nil
+}
+
+func (s Store) readOverride() (Catalog, error) {
+	if s.overridePath == "" {
+		return Catalog{Version: "user-overrides"}, nil
+	}
+	catalog, err := readCatalogFile(s.overridePath)
+	if os.IsNotExist(err) {
+		return Catalog{Version: "user-overrides"}, nil
+	}
+	if err != nil {
+		return Catalog{}, fmt.Errorf("read pricing override: %w", err)
+	}
+	return catalog, nil
 }
 
 func (s Store) Update() (UpdateResult, error) {
@@ -409,6 +498,18 @@ func (c Catalog) Resolve(modelName string, at *time.Time) (PricingProfile, bool)
 	return matches[0], true
 }
 
+func (c Catalog) HasProviderProfile(provider, sku, modelName string) bool {
+	for _, profile := range c.Profiles {
+		if !strings.EqualFold(profile.Provider, provider) {
+			continue
+		}
+		if strings.EqualFold(profile.SKU, sku) || profile.matches(modelName) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c Catalog) Validate() error {
 	if c.Version == "" {
 		return errors.New("pricing catalog version is required")
@@ -455,6 +556,17 @@ func (p PricingProfile) Validate() error {
 	}
 	if p.Rates.InputMicrosPerMillion < 0 || p.Rates.CachedInputMicrosPerMillion < 0 || p.Rates.CacheReadMicrosPerMillion < 0 || p.Rates.CacheWriteMicrosPerMillion < 0 || p.Rates.OutputMicrosPerMillion < 0 {
 		return errors.New("rates must be non-negative")
+	}
+	for i, tier := range p.Tiers {
+		if tier.Name == "" {
+			return fmt.Errorf("tier %d name is required", i)
+		}
+		if tier.UpToInputTokens != nil && *tier.UpToInputTokens < 0 {
+			return fmt.Errorf("tier %d up_to_input_tokens must be non-negative", i)
+		}
+		if tier.Rates.InputMicrosPerMillion < 0 || tier.Rates.CachedInputMicrosPerMillion < 0 || tier.Rates.CacheReadMicrosPerMillion < 0 || tier.Rates.CacheWriteMicrosPerMillion < 0 || tier.Rates.OutputMicrosPerMillion < 0 {
+			return fmt.Errorf("tier %d rates must be non-negative", i)
+		}
 	}
 	for i, source := range p.Sources {
 		if source.URL == "" {
@@ -561,7 +673,8 @@ func EstimateCollection(sessions []model.Session, active ActiveCatalog, provider
 		for _, turn := range turnsForCost(session) {
 			turnCost := estimateUsage(turnModel(turn.Model, session.Model), turn.Timestamp, turn.Usage, active.Catalog)
 			if turnCost.Status != CostAvailable {
-				if provider == "" || strings.EqualFold(providerHint(turnCost.Model), provider) {
+				missingProvider, _ := splitProviderModel(turnCost.Model)
+				if provider == "" || strings.EqualFold(missingProvider, provider) {
 					missingTurns = append(missingTurns, turnCost)
 				}
 				continue
@@ -625,6 +738,44 @@ func EstimateCollection(sessions []model.Session, active ActiveCatalog, provider
 	return out
 }
 
+func MissingProfiles(sessions []model.Session, active ActiveCatalog) []MissingProfile {
+	type stats struct {
+		provider string
+		model    string
+		sessions map[string]bool
+		turns    int
+	}
+	counts := map[string]*stats{}
+	for _, session := range sessions {
+		for _, turn := range turnsForCost(session) {
+			modelName := turnModel(turn.Model, session.Model)
+			if _, ok := active.Catalog.Resolve(modelName, turn.Timestamp); ok {
+				continue
+			}
+			provider, modelOnly := splitProviderModel(modelName)
+			key := strings.ToLower(provider + "/" + modelOnly)
+			s := counts[key]
+			if s == nil {
+				s = &stats{provider: provider, model: modelOnly, sessions: map[string]bool{}}
+				counts[key] = s
+			}
+			s.sessions[session.ID] = true
+			s.turns++
+		}
+	}
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]MissingProfile, 0, len(keys))
+	for _, key := range keys {
+		s := counts[key]
+		out = append(out, MissingProfile{Provider: s.provider, Model: s.model, Count: s.turns, Sessions: len(s.sessions), Turns: s.turns})
+	}
+	return out
+}
+
 func estimateUsage(modelName string, at *time.Time, usage model.Usage, catalog Catalog) TurnCost {
 	out := TurnCost{
 		Model:      modelName,
@@ -636,16 +787,25 @@ func estimateUsage(modelName string, at *time.Time, usage model.Usage, catalog C
 		out.Unavailable = fmt.Sprintf("pricing profile unavailable for model %q", modelName)
 		return out
 	}
-	tokens, ok, reason := billableTokens(usage, profile)
+	tokens, ok, reason := billableTokens(usage)
 	if !ok {
 		out.Unavailable = reason
 		return out
 	}
+	rates, tierName, ok := profile.ratesForInput(tokens.TotalInput())
+	if !ok {
+		out.Unavailable = "pricing tier unavailable for turn input"
+		return out
+	}
+	if rates.CacheWriteMicrosPerMillion > 0 && !usage.Billable.CacheWrite.Available() {
+		out.Unavailable = "billable cache write unavailable"
+		return out
+	}
 	cost := CostBreakdown{
-		FreshInputMicros: costMicros(tokens.FreshInput, profile.Rates.InputMicrosPerMillion),
-		CacheReadMicros:  costMicros(tokens.CacheRead, cacheReadRate(profile)),
-		CacheWriteMicros: costMicros(tokens.CacheWrite, profile.Rates.CacheWriteMicrosPerMillion),
-		OutputMicros:     costMicros(tokens.Output, profile.Rates.OutputMicrosPerMillion),
+		FreshInputMicros: costMicros(tokens.FreshInput, rates.InputMicrosPerMillion),
+		CacheReadMicros:  costMicros(tokens.CacheRead, cacheReadRate(rates)),
+		CacheWriteMicros: costMicros(tokens.CacheWrite, rates.CacheWriteMicrosPerMillion),
+		OutputMicros:     costMicros(tokens.Output, rates.OutputMicrosPerMillion),
 	}
 	cost.TotalMicros = cost.FreshInputMicros + cost.CacheReadMicros + cost.CacheWriteMicros + cost.OutputMicros
 	out.Status = CostAvailable
@@ -653,11 +813,11 @@ func estimateUsage(modelName string, at *time.Time, usage model.Usage, catalog C
 	out.Currency = profile.Currency
 	out.Usage = &tokens
 	out.Cost = &cost
-	out.Pricing = profile.ref(modelName)
+	out.Pricing = profile.ref(modelName, tierName)
 	return out
 }
 
-func billableTokens(usage model.Usage, profile PricingProfile) (BillableTokens, bool, string) {
+func billableTokens(usage model.Usage) (BillableTokens, bool, string) {
 	if usage.Billable == nil {
 		return BillableTokens{}, false, "billable usage unavailable"
 	}
@@ -674,9 +834,6 @@ func billableTokens(usage model.Usage, profile PricingProfile) (BillableTokens, 
 		return BillableTokens{}, false, "billable output unavailable"
 	}
 	cacheWrite := usage.Billable.CacheWrite.ValueOrZero()
-	if profile.Rates.CacheWriteMicrosPerMillion > 0 && !usage.Billable.CacheWrite.Available() {
-		return BillableTokens{}, false, "billable cache write unavailable"
-	}
 	freshInput := input - cacheRead - cacheWrite
 	if freshInput < 0 {
 		return BillableTokens{}, false, "billable cache tokens exceed input"
@@ -687,6 +844,10 @@ func billableTokens(usage model.Usage, profile PricingProfile) (BillableTokens, 
 		CacheWrite: cacheWrite,
 		Output:     output,
 	}, true, ""
+}
+
+func (t BillableTokens) TotalInput() int64 {
+	return t.FreshInput + t.CacheRead + t.CacheWrite
 }
 
 func (s Store) readCache() (Catalog, CatalogMeta, error) {
@@ -729,11 +890,20 @@ func (s Store) writeCache(data []byte, meta CatalogMeta) error {
 }
 
 func atomicWrite(path string, data []byte) error {
+	return atomicWritePerm(path, data, 0o600)
+}
+
+func atomicWritePerm(path string, data []byte, perm os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("set temp file permissions: %w", err)
+	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
@@ -767,7 +937,60 @@ func readCatalogFile(path string) (Catalog, error) {
 	return DecodeCatalog(io.LimitReader(f, maxCatalogBytes+1))
 }
 
+func mergeCatalogs(base, higher Catalog) Catalog {
+	out := Catalog{Version: higher.Version, GeneratedAt: higher.GeneratedAt, Profiles: append([]PricingProfile{}, higher.Profiles...)}
+	seen := map[string]bool{}
+	for _, profile := range higher.Profiles {
+		for _, alias := range profile.allAliases() {
+			seen[strings.ToLower(profile.Provider+"/"+alias)] = true
+		}
+	}
+	for _, profile := range base.Profiles {
+		replaced := false
+		for _, alias := range profile.allAliases() {
+			if seen[strings.ToLower(profile.Provider+"/"+alias)] {
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out.Profiles = append(out.Profiles, profile)
+		}
+	}
+	sortProfiles(out.Profiles)
+	return out
+}
+
+func setCatalogSource(catalog *Catalog, source CatalogSource) {
+	for i := range catalog.Profiles {
+		catalog.Profiles[i].CatalogSource = source
+	}
+}
+
+func sortProfiles(profiles []PricingProfile) {
+	sort.SliceStable(profiles, func(i, j int) bool {
+		if !strings.EqualFold(profiles[i].Provider, profiles[j].Provider) {
+			return strings.ToLower(profiles[i].Provider) < strings.ToLower(profiles[j].Provider)
+		}
+		return strings.ToLower(profiles[i].SKU) < strings.ToLower(profiles[j].SKU)
+	})
+}
+
+func replaceProviderModel(profiles []PricingProfile, profile PricingProfile) []PricingProfile {
+	out := profiles[:0]
+	for _, existing := range profiles {
+		if strings.EqualFold(existing.Provider, profile.Provider) && (strings.EqualFold(existing.SKU, profile.SKU) || existing.matches(profile.Model)) {
+			continue
+		}
+		out = append(out, existing)
+	}
+	return append(out, profile)
+}
+
 func profileAfter(a, b PricingProfile) bool {
+	if sourceRank(a.CatalogSource) != sourceRank(b.CatalogSource) {
+		return sourceRank(a.CatalogSource) > sourceRank(b.CatalogSource)
+	}
 	if a.EffectiveFrom == nil && b.EffectiveFrom != nil {
 		return false
 	}
@@ -778,6 +1001,19 @@ func profileAfter(a, b PricingProfile) bool {
 		return a.EffectiveFrom.After(*b.EffectiveFrom)
 	}
 	return a.SKU < b.SKU
+}
+
+func sourceRank(source CatalogSource) int {
+	switch source {
+	case SourceOverride:
+		return 3
+	case SourceCache:
+		return 2
+	case SourceEmbedded:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func (p PricingProfile) matches(modelName string) bool {
@@ -811,21 +1047,34 @@ func (p PricingProfile) allAliases() []string {
 	return aliases
 }
 
-func (p PricingProfile) ref(modelName string) *ProfileRef {
+func (p PricingProfile) ref(modelName, tier string) *ProfileRef {
 	return &ProfileRef{
 		Provider:      p.Provider,
 		SKU:           p.SKU,
 		Model:         modelName,
+		Tier:          tier,
 		Currency:      p.Currency,
 		EffectiveFrom: p.EffectiveFrom,
 	}
 }
 
-func cacheReadRate(profile PricingProfile) int64 {
-	if profile.Rates.CacheReadMicrosPerMillion != 0 {
-		return profile.Rates.CacheReadMicrosPerMillion
+func (p PricingProfile) ratesForInput(input int64) (Rates, string, bool) {
+	if len(p.Tiers) == 0 {
+		return p.Rates, "", true
 	}
-	return profile.Rates.CachedInputMicrosPerMillion
+	for _, tier := range p.Tiers {
+		if tier.UpToInputTokens == nil || input <= *tier.UpToInputTokens {
+			return tier.Rates, tier.Name, true
+		}
+	}
+	return Rates{}, "", false
+}
+
+func cacheReadRate(rates Rates) int64 {
+	if rates.CacheReadMicrosPerMillion != 0 {
+		return rates.CacheReadMicrosPerMillion
+	}
+	return rates.CachedInputMicrosPerMillion
 }
 
 func measurementValue(m model.Measurement) (int64, bool) {
@@ -922,7 +1171,8 @@ func missingFromTurns(turns []TurnCost) []MissingProfile {
 		if modelName == "" {
 			modelName = "unknown model"
 		}
-		out = append(out, MissingProfile{Provider: providerHint(modelName), Model: modelName, Count: counts[key]})
+		provider, modelName := splitProviderModel(modelName)
+		out = append(out, MissingProfile{Provider: provider, Model: modelName, Count: counts[key], Turns: counts[key]})
 	}
 	return out
 }
@@ -939,16 +1189,60 @@ func formatMissing(missing []MissingProfile) []string {
 	return out
 }
 
-func providerHint(modelName string) string {
-	name := strings.ToLower(modelName)
-	switch {
-	case strings.HasPrefix(name, "gpt-"), strings.HasPrefix(name, "o1"), strings.HasPrefix(name, "o3"), strings.HasPrefix(name, "o4"):
-		return "openai"
-	case strings.HasPrefix(name, "minimax-"):
-		return "minimax"
-	case strings.HasPrefix(name, "claude-"):
-		return "anthropic"
-	default:
-		return ""
+func splitProviderModel(value string) (string, string) {
+	provider, modelName, ok := strings.Cut(value, "/")
+	if !ok || provider == "" || modelName == "" {
+		return "", value
 	}
+	return provider, modelName
+}
+
+func DecimalMicros(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, errors.New("rate is required")
+	}
+	if strings.HasPrefix(value, "-") {
+		return 0, errors.New("rate must be non-negative")
+	}
+	whole, frac, ok := strings.Cut(value, ".")
+	if !ok {
+		whole, frac = value, ""
+	}
+	if whole == "" {
+		whole = "0"
+	}
+	if len(frac) > 6 {
+		return 0, errors.New("rate supports at most 6 decimal places")
+	}
+	if !digitsOnly(whole) || !digitsOnly(frac) {
+		return 0, fmt.Errorf("invalid decimal rate %q", value)
+	}
+	wholeMicros, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse rate %q: %w", value, err)
+	}
+	for len(frac) < 6 {
+		frac += "0"
+	}
+	fracMicros := int64(0)
+	if frac != "" {
+		fracMicros, err = strconv.ParseInt(frac, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse rate %q: %w", value, err)
+		}
+	}
+	if wholeMicros > (1<<63-1-fracMicros)/1_000_000 {
+		return 0, fmt.Errorf("rate %q overflows money representation", value)
+	}
+	return wholeMicros*1_000_000 + fracMicros, nil
+}
+
+func digitsOnly(value string) bool {
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

@@ -23,6 +23,9 @@ func Render(w io.Writer, result pricing.CostResult) error {
 		fmt.Fprintln(w, "API-equivalent cost unavailable")
 		fmt.Fprintln(w, strings.Repeat("─", 60))
 		fmt.Fprintf(w, "Reason        %s\n", result.Unavailable)
+		if len(result.Missing) > 0 {
+			fmt.Fprintln(w, "Hint          Run `tok pricing update` or `tok pricing add <model>`")
+		}
 		return nil
 	}
 
@@ -45,7 +48,14 @@ func Render(w io.Writer, result pricing.CostResult) error {
 		fmt.Fprintln(w, strings.Repeat("─", 60))
 		fmt.Fprintf(w, "%-14s %s\n", "Provider", result.Pricing.Provider)
 		fmt.Fprintf(w, "%-14s %s\n", "Model", result.Pricing.Model)
-		fmt.Fprintf(w, "%-14s %s\n", "Effective", result.Pricing.EffectiveFrom.Format("2006-01-02"))
+		if result.Pricing.Tier != "" {
+			fmt.Fprintf(w, "%-14s %s\n", "Tier", result.Pricing.Tier)
+		}
+		effective := "-"
+		if result.Pricing.EffectiveFrom != nil {
+			effective = result.Pricing.EffectiveFrom.Format("2006-01-02")
+		}
+		fmt.Fprintf(w, "%-14s %s\n", "Effective", effective)
 		fmt.Fprintf(w, "%-14s %s\n", "Estimate", result.Provenance)
 	}
 	return nil

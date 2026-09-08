@@ -326,6 +326,92 @@ func TestPricingJSONCommands(t *testing.T) {
 	}
 }
 
+func TestPricingMissingJSONCommandDeduplicatesSessions(t *testing.T) {
+	withCLIFixtureHome(t)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"pricing", "missing", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute pricing missing json: %v", err)
+	}
+	var decoded struct {
+		Missing []struct {
+			Model    string `json:"model"`
+			Sessions int    `json:"sessions"`
+			Turns    int    `json:"turns"`
+		} `json:"missing"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode pricing missing json: %v\n%s", err, stdout.String())
+	}
+	found := false
+	for _, miss := range decoded.Missing {
+		if miss.Model == "gpt-5" {
+			found = true
+			if miss.Sessions == 0 || miss.Turns == 0 {
+				t.Fatalf("gpt-5 missing counts = %+v, want non-zero", miss)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("missing = %+v, want gpt-5 unresolved", decoded.Missing)
+	}
+}
+
+func TestPricingAddPersistsOverrideAndShowResolves(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir codex: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "codex", "basic-session.jsonl"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "sessions", "basic.jsonl"), data, 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"pricing", "add", "custom/model-x", "--input", "1.25", "--cached-input", "0.10", "--output", "9", "--currency", "usd"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute pricing add: %v", err)
+	}
+	stdout.Reset()
+	cmd = newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"pricing", "show", "model-x"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute pricing show: %v", err)
+	}
+	got := stdout.String()
+	for _, want := range []string{"Provider       custom", "SKU            model-x", "Catalog        override"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("show output = %q, want %q", got, want)
+		}
+	}
+
+	stdout.Reset()
+	cmd = newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"pricing", "add", "openai/gpt-5", "--input", "1", "--output", "2"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute pricing add gpt-5: %v", err)
+	}
+	stdout.Reset()
+	cmd = newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"cost", "sess-1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute cost with override: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "API-equivalent cost") || strings.Contains(got, "unavailable") {
+		t.Fatalf("cost output = %q, want resolved cost from override", got)
+	}
+}
+
 func TestSessionsCommand(t *testing.T) {
 	withCLIFixtureHome(t)
 	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))

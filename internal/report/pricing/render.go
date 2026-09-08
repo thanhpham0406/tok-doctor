@@ -6,8 +6,10 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/thanhpham0406/tok-doctor/internal/model"
 	"github.com/thanhpham0406/tok-doctor/internal/pricing"
 	reportcost "github.com/thanhpham0406/tok-doctor/internal/report/cost"
+	reportusage "github.com/thanhpham0406/tok-doctor/internal/report/usage"
 )
 
 func RenderStatus(w io.Writer, status pricing.Status) error {
@@ -53,14 +55,15 @@ func RenderList(w io.Writer, active pricing.ActiveCatalog) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "Provider\tSKU\tModel\tAliases\tCurrency")
+	fmt.Fprintln(tw, "Provider\tSKU\tModel\tAliases\tCurrency\tTiers")
 	for _, profile := range active.Catalog.Profiles {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			profile.Provider,
 			profile.SKU,
 			orDash(profile.Model),
 			orDash(strings.Join(profile.Aliases, ", ")),
 			profile.Currency,
+			tierSummary(profile.Tiers),
 		)
 	}
 	return tw.Flush()
@@ -81,15 +84,49 @@ func RenderShow(w io.Writer, active pricing.ActiveCatalog, modelName string, pro
 	} else {
 		fmt.Fprintf(w, "%-14s %s\n", "Effective", "-")
 	}
-	fmt.Fprintf(w, "%-14s %s/%s\n", "Catalog", active.Source, active.Catalog.Version)
+	source := profile.CatalogSource
+	if source == "" {
+		source = active.Source
+	}
+	catalogLabel := string(source)
+	if source == active.Source && active.Catalog.Version != "" {
+		catalogLabel += "/" + active.Catalog.Version
+	}
+	fmt.Fprintf(w, "%-14s %s\n", "Catalog", catalogLabel)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Rates per 1M tokens")
 	fmt.Fprintln(w, strings.Repeat("─", 60))
-	renderRate(w, "Input", profile.Rates.InputMicrosPerMillion)
-	renderRate(w, "Cached input", profile.Rates.CachedInputMicrosPerMillion)
-	renderRate(w, "Cache read", profile.Rates.CacheReadMicrosPerMillion)
-	renderRate(w, "Cache write", profile.Rates.CacheWriteMicrosPerMillion)
-	renderRate(w, "Output", profile.Rates.OutputMicrosPerMillion)
+	if len(profile.Tiers) == 0 {
+		renderRates(w, profile.Rates)
+		return nil
+	}
+	for _, tier := range profile.Tiers {
+		fmt.Fprintf(w, "%s (%s)\n", tier.Name, inputRange(tier.UpToInputTokens))
+		renderRates(w, tier.Rates)
+	}
+	return nil
+}
+
+func RenderMissing(w io.Writer, missing []pricing.MissingProfile) error {
+	fmt.Fprintln(w, "Missing pricing")
+	fmt.Fprintln(w, strings.Repeat("─", 80))
+	if len(missing) == 0 {
+		fmt.Fprintln(w, "No unresolved pricing profiles found")
+		return nil
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "Provider\tModel\tSessions\tTurns")
+	for _, miss := range missing {
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\n", orDash(miss.Provider), miss.Model, miss.Sessions, miss.Turns)
+	}
+	return tw.Flush()
+}
+
+func RenderAdd(w io.Writer, profile pricing.PricingProfile) error {
+	fmt.Fprintln(w, "Pricing override saved")
+	fmt.Fprintf(w, "%-10s %s\n", "Provider", profile.Provider)
+	fmt.Fprintf(w, "%-10s %s\n", "SKU", profile.SKU)
+	fmt.Fprintf(w, "%-10s %s\n", "Currency", profile.Currency)
 	return nil
 }
 
@@ -98,6 +135,36 @@ func renderRate(w io.Writer, name string, micros int64) {
 		return
 	}
 	fmt.Fprintf(w, "%-14s %s\n", name, reportcost.FormatMicros(micros))
+}
+
+func renderRates(w io.Writer, rates pricing.Rates) {
+	renderRate(w, "Input", rates.InputMicrosPerMillion)
+	renderRate(w, "Cached input", rates.CachedInputMicrosPerMillion)
+	renderRate(w, "Cache read", rates.CacheReadMicrosPerMillion)
+	renderRate(w, "Cache write", rates.CacheWriteMicrosPerMillion)
+	renderRate(w, "Output", rates.OutputMicrosPerMillion)
+}
+
+func tierSummary(tiers []pricing.PricingTier) string {
+	if len(tiers) == 0 {
+		return "-"
+	}
+	names := make([]string, 0, len(tiers))
+	for _, tier := range tiers {
+		names = append(names, tier.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
+func inputRange(limit *int64) string {
+	if limit == nil {
+		return "above prior tier"
+	}
+	return fmt.Sprintf("input <= %s", formatInt(*limit))
+}
+
+func formatInt(n int64) string {
+	return reportusage.FormatTokenCount(model.NewMeasurement(n, model.MeasurementDerived))
 }
 
 func orDash(value string) string {

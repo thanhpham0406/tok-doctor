@@ -224,6 +224,26 @@ func (a *App) PricingUpdate() (pricing.UpdateResult, error) {
 	return store.Update()
 }
 
+func (a *App) PricingAdd(profile pricing.PricingProfile, replace bool) (pricing.PricingProfile, error) {
+	store, err := a.pricingStore()
+	if err != nil {
+		return pricing.PricingProfile{}, err
+	}
+	return store.AddOverride(profile, replace)
+}
+
+func (a *App) PricingMissing(ctx context.Context) ([]pricing.MissingProfile, error) {
+	sessions, err := a.SessionsAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	active, err := a.activePricingCatalog()
+	if err != nil {
+		return nil, err
+	}
+	return pricing.MissingProfiles(sessions.Sessions, active), nil
+}
+
 func (a *App) activePricingCatalog() (pricing.ActiveCatalog, error) {
 	store, err := a.pricingStore()
 	if err != nil {

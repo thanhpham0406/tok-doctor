@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,7 +54,24 @@ func TestEmbeddedCatalogDoesNotGuessUnknownModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedCatalog: %v", err)
 	}
-	for _, modelName := range []string{"gpt-5.5-preview-extra", "MiniMax-M3"} {
+	for _, modelName := range []string{"gpt-5.5-preview-extra", "MiniMax-M3-preview-extra"} {
+		if _, ok := catalog.Resolve(modelName, nil); ok {
+			t.Fatalf("unexpected pricing match for %s", modelName)
+		}
+	}
+}
+
+func TestEmbeddedCatalogTieredProfileAliasesResolveExactly(t *testing.T) {
+	catalog, err := EmbeddedCatalog()
+	if err != nil {
+		t.Fatalf("EmbeddedCatalog: %v", err)
+	}
+	for _, modelName := range []string{"MiniMax-M3", "minimax/MiniMax-M3", "gpt-5.6-luna", "openai/gpt-5.6-luna", "gpt-6-astra", "openai/gpt-6-astra"} {
+		if _, ok := catalog.Resolve(modelName, nil); !ok {
+			t.Fatalf("%s did not resolve", modelName)
+		}
+	}
+	for _, modelName := range []string{"minimax/minimax-m3-extra", "openai/gpt-5.6-luna-extra", "openai/gpt-6-astra-extra"} {
 		if _, ok := catalog.Resolve(modelName, nil); ok {
 			t.Fatalf("unexpected pricing match for %s", modelName)
 		}
@@ -94,6 +112,91 @@ func TestGPT55CostUsesEmbeddedCatalogRates(t *testing.T) {
 	}
 	if result.Cost.TotalMicros != 18_875_000 {
 		t.Fatalf("total micros = %d, want 18875000", result.Cost.TotalMicros)
+	}
+}
+
+func TestTieredEmbeddedCatalogCosts(t *testing.T) {
+	catalog, err := EmbeddedCatalog()
+	if err != nil {
+		t.Fatalf("EmbeddedCatalog: %v", err)
+	}
+	tests := []struct {
+		name       string
+		modelName  string
+		input      int64
+		cacheWrite *int64
+		wantTier   string
+		wantTotal  int64
+	}{
+		{name: "MiniMax-M3 base", modelName: "MiniMax-M3", input: 512_000, wantTier: "base", wantTotal: 153_600},
+		{name: "MiniMax-M3 long", modelName: "MiniMax-M3", input: 512_001, wantTier: "long-context", wantTotal: 307_200},
+		{name: "Luna base", modelName: "gpt-5.6-luna", input: 272_000, wantTier: "base", wantTotal: 54_400},
+		{name: "Luna long", modelName: "gpt-5.6-luna", input: 272_001, wantTier: "long-context", wantTotal: 108_800},
+		{name: "Astra base", modelName: "gpt-6-astra", input: 272_000, cacheWrite: int64Ptr(0), wantTier: "base", wantTotal: 2_720_000},
+		{name: "Astra long", modelName: "gpt-6-astra", input: 272_001, cacheWrite: int64Ptr(0), wantTier: "long-context", wantTotal: 5_440_020},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := EstimateSession(sessionWithTurn(tt.modelName, usageWithBillable(tt.input, 0, tt.cacheWrite, 0)), active(catalog))
+			if result.Status != CostAvailable {
+				t.Fatalf("status = %s: %s", result.Status, result.Unavailable)
+			}
+			if result.Turns[0].Pricing.Tier != tt.wantTier {
+				t.Fatalf("tier = %s, want %s", result.Turns[0].Pricing.Tier, tt.wantTier)
+			}
+			if result.Cost.TotalMicros != tt.wantTotal {
+				t.Fatalf("total = %d, want %d", result.Cost.TotalMicros, tt.wantTotal)
+			}
+		})
+	}
+}
+
+func TestMixedTierTurnsAggregate(t *testing.T) {
+	catalog, err := EmbeddedCatalog()
+	if err != nil {
+		t.Fatalf("EmbeddedCatalog: %v", err)
+	}
+	session := model.Session{ID: "sess", Model: "MiniMax-M3", Turns: []model.Turn{
+		{Sequence: 1, Model: "MiniMax-M3", Usage: usageWithBillable(512_000, 0, nil, 0)},
+		{Sequence: 2, Model: "MiniMax-M3", Usage: usageWithBillable(512_001, 0, nil, 0)},
+	}}
+	result := EstimateSession(session, active(catalog))
+	if result.Status != CostAvailable {
+		t.Fatalf("status = %s: %s", result.Status, result.Unavailable)
+	}
+	if result.Turns[0].Pricing.Tier != "base" || result.Turns[1].Pricing.Tier != "long-context" {
+		t.Fatalf("tiers = %s/%s, want base/long-context", result.Turns[0].Pricing.Tier, result.Turns[1].Pricing.Tier)
+	}
+	if result.Cost.TotalMicros != 460_800 {
+		t.Fatalf("total = %d, want mixed-tier aggregate 460800", result.Cost.TotalMicros)
+	}
+}
+
+func TestTieredPricingUnavailableWhenNoTierMatches(t *testing.T) {
+	limit := int64(10)
+	catalog := Catalog{Version: "test", Profiles: []PricingProfile{{
+		Provider: "OpenAI", SKU: "limited", Model: "limited", Currency: "USD",
+		Rates: Rates{},
+		Tiers: []PricingTier{{Name: "base", UpToInputTokens: &limit, Rates: Rates{InputMicrosPerMillion: 1}}},
+	}}}
+	result := EstimateSession(sessionWithTurn("limited", usageWithBillable(11, 0, nil, 0)), active(catalog))
+	if result.Status != CostUnavailable || !strings.Contains(result.Unavailable, "pricing tier unavailable") {
+		t.Fatalf("result = %+v, want unavailable tier", result)
+	}
+}
+
+func TestTieredCacheWriteMissingIsUnavailableOnlyWhenBilled(t *testing.T) {
+	catalog, err := EmbeddedCatalog()
+	if err != nil {
+		t.Fatalf("EmbeddedCatalog: %v", err)
+	}
+	luna := EstimateSession(sessionWithTurn("gpt-5.6-luna", usageWithBillable(1, 0, nil, 0)), active(catalog))
+	if luna.Status != CostAvailable {
+		t.Fatalf("luna status = %s: %s", luna.Status, luna.Unavailable)
+	}
+	astra := EstimateSession(sessionWithTurn("gpt-6-astra", usageWithBillable(1, 0, nil, 0)), active(catalog))
+	if astra.Status != CostUnavailable || !strings.Contains(astra.Unavailable, "cache write unavailable") {
+		t.Fatalf("astra = %+v, want cache write unavailable", astra)
 	}
 }
 
@@ -292,6 +395,39 @@ func TestRepeatedMissingProfilesAreDeduplicated(t *testing.T) {
 	result := EstimateSession(session, testActiveCatalog())
 	if len(result.Missing) != 1 || result.Missing[0].Count != 2 {
 		t.Fatalf("missing = %+v, want one grouped missing profile", result.Missing)
+	}
+}
+
+func TestMissingProfilesDeduplicatesProviderModelAndCountsSessionsTurns(t *testing.T) {
+	sessions := []model.Session{
+		{ID: "s1", Turns: []model.Turn{
+			{Sequence: 1, Model: "custom/missing", Usage: usageWithBillable(1, 0, nil, 0)},
+			{Sequence: 2, Model: "custom/missing", Usage: usageWithBillable(1, 0, nil, 0)},
+		}},
+		{ID: "s2", Turns: []model.Turn{
+			{Sequence: 1, Model: "custom/missing", Usage: usageWithBillable(1, 0, nil, 0)},
+			{Sequence: 2, Model: "gpt-test", Usage: usageWithBillable(1, 0, nil, 0)},
+		}},
+	}
+	missing := MissingProfiles(sessions, testActiveCatalog())
+	if len(missing) != 1 {
+		t.Fatalf("missing = %+v, want one unresolved profile", missing)
+	}
+	if missing[0].Provider != "custom" || missing[0].Model != "missing" || missing[0].Sessions != 2 || missing[0].Turns != 3 {
+		t.Fatalf("missing = %+v, want custom/missing across 2 sessions and 3 turns", missing[0])
+	}
+}
+
+func TestUserOverrideRemovesModelFromMissingProfiles(t *testing.T) {
+	override := Catalog{Version: "override", Profiles: []PricingProfile{{
+		Provider: "custom", SKU: "missing", Model: "missing", Currency: "USD",
+		Rates: Rates{InputMicrosPerMillion: 1, OutputMicrosPerMillion: 1},
+	}}}
+	setCatalogSource(&override, SourceOverride)
+	active := ActiveCatalog{Catalog: mergeCatalogs(testCatalog(), override), Source: SourceOverride}
+	sessions := []model.Session{{ID: "s1", Turns: []model.Turn{{Sequence: 1, Model: "missing", Usage: usageWithBillable(1, 0, nil, 1)}}}}
+	if missing := MissingProfiles(sessions, active); len(missing) != 0 {
+		t.Fatalf("missing = %+v, want override to resolve model", missing)
 	}
 }
 

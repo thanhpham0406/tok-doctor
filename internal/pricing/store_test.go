@@ -149,6 +149,37 @@ func TestCatalogPrecedenceOverrideDownloadedEmbedded(t *testing.T) {
 	}
 }
 
+func TestUserOverrideBeatsDownloadedAndEmbeddedProfile(t *testing.T) {
+	cacheServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, testCatalogJSON("cache", "gpt-5.5"))
+	}))
+	defer cacheServer.Close()
+	overridePath := filepath.Join(t.TempDir(), "override.json")
+	if err := os.WriteFile(overridePath, []byte(`{
+  "version": "override",
+  "profiles": [{
+    "provider": "openai",
+    "sku": "gpt-5.5-custom",
+    "model": "gpt-5.5",
+    "currency": "USD",
+    "rates": {"input_micros_per_million": 42, "output_micros_per_million": 99}
+  }]
+}`), 0o600); err != nil {
+		t.Fatalf("write override: %v", err)
+	}
+	store := testStore(t, cacheServer.URL, overridePath)
+	if _, err := store.Update(); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	active, profile, ok, err := store.Show("gpt-5.5")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if !ok || active.Source != SourceOverride || profile.SKU != "gpt-5.5-custom" || profile.CatalogSource != SourceOverride {
+		t.Fatalf("profile = %+v active=%+v, want user override", profile, active)
+	}
+}
+
 func TestUpdateSendsETag(t *testing.T) {
 	seen := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
