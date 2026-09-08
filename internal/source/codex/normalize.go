@@ -12,10 +12,7 @@ type UsageSnapshot struct {
 }
 
 func (s UsageSnapshot) ToModelUsage() model.Usage {
-	if !s.hasAuthoritativeUsage() {
-		return model.Usage{}
-	}
-	return model.MeasuredUsage(s.Input, s.Cached, s.Output, s.Reasoning, s.Total)
+	return s.toModelUsage(model.MeasurementMeasured)
 }
 
 func (s UsageSnapshot) ToModelUsageWithEvidence(recordID string) model.Usage {
@@ -32,9 +29,13 @@ func (s UsageSnapshot) toModelUsage(kind model.MeasurementKind) model.Usage {
 		return model.Usage{}
 	}
 	if kind == model.MeasurementDerived {
-		return model.DerivedUsage(s.Input, s.Cached, s.Output, s.Reasoning, s.Total)
+		usage := model.DerivedUsage(s.Input, s.Cached, s.Output, s.Reasoning, s.Total)
+		usage.Billable = model.NewBillableUsage(s.Input, s.Cached, s.Output, nil, model.MeasurementDerived)
+		return usage
 	}
-	return model.MeasuredUsage(s.Input, s.Cached, s.Output, s.Reasoning, s.Total)
+	usage := model.MeasuredUsage(s.Input, s.Cached, s.Output, s.Reasoning, s.Total)
+	usage.Billable = model.NewBillableUsage(s.Input, s.Cached, s.Output, nil, model.MeasurementMeasured)
+	return usage
 }
 
 func attachSourceValue(u *model.Usage, recordID string) {

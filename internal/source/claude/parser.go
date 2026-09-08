@@ -43,10 +43,12 @@ func (u *usageFields) snapshot() UsageSnapshot {
 		populated = true
 	}
 	if u.CacheReadInputTokens != nil {
+		snap.CacheRead += *u.CacheReadInputTokens
 		snap.Cached += *u.CacheReadInputTokens
 		populated = true
 	}
 	if u.CacheCreationInputTokens != nil {
+		snap.CacheWrite += *u.CacheCreationInputTokens
 		snap.Cached += *u.CacheCreationInputTokens
 		populated = true
 	}

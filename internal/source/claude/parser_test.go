@@ -37,6 +37,9 @@ func TestParseSessionUsageCacheFields(t *testing.T) {
 	if snap.Cached != 3400 {
 		t.Fatalf("cached = %d, want 3400", snap.Cached)
 	}
+	if snap.CacheRead != 3200 || snap.CacheWrite != 200 {
+		t.Fatalf("cache read/write = %d/%d, want 3200/200", snap.CacheRead, snap.CacheWrite)
+	}
 }
 
 func TestParseSessionUsageSkipsUserAndMalformed(t *testing.T) {
@@ -77,12 +80,15 @@ func TestParseSessionUsageEmptyFile(t *testing.T) {
 }
 
 func TestUsageSnapshotToModelUsage(t *testing.T) {
-	u := UsageSnapshot{Input: 10, Cached: 5, Output: 3, Total: 18, HasUsage: true}.ToModelUsage()
+	u := UsageSnapshot{Input: 10, CacheRead: 2, CacheWrite: 3, Cached: 5, Output: 3, Total: 18, HasUsage: true}.ToModelUsage()
 	if u.Input.ValueOrZero() != 10 || u.Cached.ValueOrZero() != 5 || u.Output.ValueOrZero() != 3 || u.Total.ValueOrZero() != 18 {
 		t.Fatalf("usage = %+v", u)
 	}
 	if u.Total.Kind != model.MeasurementMeasured {
 		t.Fatalf("total kind = %q, want measured", u.Total.Kind)
+	}
+	if u.Billable == nil || u.Billable.Input.ValueOrZero() != 15 || u.Billable.CacheRead.ValueOrZero() != 2 || u.Billable.CacheWrite.ValueOrZero() != 3 {
+		t.Fatalf("billable = %+v, want total input 15 with read/write split", u.Billable)
 	}
 }
 

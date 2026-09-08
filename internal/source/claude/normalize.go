@@ -3,11 +3,13 @@ package claude
 import "github.com/thanhpham0406/tok-doctor/internal/model"
 
 type UsageSnapshot struct {
-	Input    int64
-	Cached   int64
-	Output   int64
-	Total    int64
-	HasUsage bool
+	Input      int64
+	CacheRead  int64
+	CacheWrite int64
+	Cached     int64
+	Output     int64
+	Total      int64
+	HasUsage   bool
 }
 
 func (s UsageSnapshot) add(other UsageSnapshot) UsageSnapshot {
@@ -17,6 +19,8 @@ func (s UsageSnapshot) add(other UsageSnapshot) UsageSnapshot {
 	s.HasUsage = true
 	s.Input += other.Input
 	s.Output += other.Output
+	s.CacheRead += other.CacheRead
+	s.CacheWrite += other.CacheWrite
 	s.Cached += other.Cached
 	s.Total += other.Total
 	return s
@@ -49,9 +53,15 @@ func (s UsageSnapshot) toModelUsage(kind model.MeasurementKind) model.Usage {
 	}
 	switch kind {
 	case model.MeasurementDerived:
-		return model.DerivedUsage(s.Input, s.Cached, s.Output, nil, s.Total)
+		usage := model.DerivedUsage(s.Input, s.Cached, s.Output, nil, s.Total)
+		cw := s.CacheWrite
+		usage.Billable = model.NewBillableUsage(s.Input+s.Cached, s.CacheRead, s.Output, &cw, model.MeasurementDerived)
+		return usage
 	default:
-		return model.MeasuredUsage(s.Input, s.Cached, s.Output, nil, s.Total)
+		usage := model.MeasuredUsage(s.Input, s.Cached, s.Output, nil, s.Total)
+		cw := s.CacheWrite
+		usage.Billable = model.NewBillableUsage(s.Input+s.Cached, s.CacheRead, s.Output, &cw, model.MeasurementMeasured)
+		return usage
 	}
 }
 

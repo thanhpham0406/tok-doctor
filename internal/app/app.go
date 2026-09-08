@@ -12,6 +12,7 @@ import (
 	"github.com/thanhpham0406/tok-doctor/internal/analyze"
 	"github.com/thanhpham0406/tok-doctor/internal/config"
 	"github.com/thanhpham0406/tok-doctor/internal/model"
+	"github.com/thanhpham0406/tok-doctor/internal/pricing"
 	"github.com/thanhpham0406/tok-doctor/internal/source"
 	"github.com/thanhpham0406/tok-doctor/internal/source/catalog"
 	"github.com/thanhpham0406/tok-doctor/internal/source/codex"
@@ -153,6 +154,90 @@ func (a *App) Inspect(ctx context.Context, id string) (model.Session, error) {
 		return model.Session{}, err
 	}
 	return pickSessionByID(sessions.Sessions, id)
+}
+
+func (a *App) Cost(ctx context.Context, id string) (pricing.CostResult, error) {
+	session, err := a.Inspect(ctx, id)
+	if err != nil {
+		return pricing.CostResult{}, err
+	}
+	active, err := a.activePricingCatalog()
+	if err != nil {
+		return pricing.CostResult{}, err
+	}
+	return pricing.EstimateSession(session, active), nil
+}
+
+func (a *App) CostAll(ctx context.Context) (pricing.CostCollection, error) {
+	sessions, err := a.SessionsAll(ctx)
+	if err != nil {
+		return pricing.CostCollection{}, err
+	}
+	active, err := a.activePricingCatalog()
+	if err != nil {
+		return pricing.CostCollection{}, err
+	}
+	return pricing.EstimateCollection(sessions.Sessions, active, ""), nil
+}
+
+func (a *App) CostProvider(ctx context.Context, provider string) (pricing.CostCollection, error) {
+	sessions, err := a.SessionsAll(ctx)
+	if err != nil {
+		return pricing.CostCollection{}, err
+	}
+	active, err := a.activePricingCatalog()
+	if err != nil {
+		return pricing.CostCollection{}, err
+	}
+	return pricing.EstimateCollection(sessions.Sessions, active, provider), nil
+}
+
+func (a *App) PricingStatus() (pricing.Status, error) {
+	store, err := a.pricingStore()
+	if err != nil {
+		return pricing.Status{}, err
+	}
+	return store.Status()
+}
+
+func (a *App) PricingList() (pricing.ActiveCatalog, error) {
+	store, err := a.pricingStore()
+	if err != nil {
+		return pricing.ActiveCatalog{}, err
+	}
+	return store.List()
+}
+
+func (a *App) PricingShow(modelName string) (pricing.ActiveCatalog, pricing.PricingProfile, bool, error) {
+	store, err := a.pricingStore()
+	if err != nil {
+		return pricing.ActiveCatalog{}, pricing.PricingProfile{}, false, err
+	}
+	return store.Show(modelName)
+}
+
+func (a *App) PricingUpdate() (pricing.UpdateResult, error) {
+	store, err := a.pricingStore()
+	if err != nil {
+		return pricing.UpdateResult{}, err
+	}
+	return store.Update()
+}
+
+func (a *App) activePricingCatalog() (pricing.ActiveCatalog, error) {
+	store, err := a.pricingStore()
+	if err != nil {
+		return pricing.ActiveCatalog{}, err
+	}
+	return store.Active()
+}
+
+func (a *App) pricingStore() (pricing.Store, error) {
+	cfg, err := a.config.Load()
+	if err != nil {
+		return pricing.Store{}, err
+	}
+	return pricing.DefaultStore(cfg.Pricing.OverridePath)
 }
 
 func pickSessionByID(sessions []model.Session, id string) (model.Session, error) {

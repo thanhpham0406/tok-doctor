@@ -11,11 +11,16 @@ import (
 
 type Config struct {
 	Sources map[string]Source `json:"sources,omitempty"`
+	Pricing Pricing           `json:"pricing,omitempty"`
 }
 
 type Source struct {
 	Path     string `json:"path,omitempty"`
 	Endpoint string `json:"endpoint,omitempty"`
+}
+
+type Pricing struct {
+	OverridePath string `json:"override_path,omitempty"`
 }
 
 type Store struct {
@@ -65,7 +70,12 @@ func (s Store) Load() (Config, error) {
 			continue
 		}
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			current = sectionSource(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
+			section := strings.TrimSuffix(strings.TrimPrefix(line, "["), "]")
+			if section == "pricing" {
+				current = "pricing"
+			} else {
+				current = sectionSource(section)
+			}
 			continue
 		}
 		if current == "" {
@@ -80,6 +90,13 @@ func (s Store) Load() (Config, error) {
 		parsed, err := parseString(strings.TrimSpace(value))
 		if err != nil {
 			return Config{}, fmt.Errorf("parse config %s: %w", s.path, err)
+		}
+
+		if current == "pricing" {
+			if key == "override_path" {
+				cfg.Pricing.OverridePath = parsed
+			}
+			continue
 		}
 
 		src := cfg.Sources[current]
@@ -118,6 +135,16 @@ func (s Store) Save(cfg Config) error {
 	}
 	sort.Strings(names)
 
+	if cfg.Pricing.OverridePath != "" {
+		b.WriteString("[pricing]\n")
+		b.WriteString("override_path = ")
+		b.WriteString(quoteString(cfg.Pricing.OverridePath))
+		b.WriteByte('\n')
+		if len(names) > 0 {
+			b.WriteByte('\n')
+		}
+	}
+
 	for i, name := range names {
 		if i > 0 {
 			b.WriteByte('\n')
@@ -143,6 +170,15 @@ func (s Store) Save(cfg Config) error {
 		return fmt.Errorf("write config %s: %w", s.path, err)
 	}
 	return nil
+}
+
+func (s Store) SetPricingOverride(path string) error {
+	cfg, err := s.Load()
+	if err != nil {
+		return err
+	}
+	cfg.Pricing.OverridePath = path
+	return s.Save(cfg)
 }
 
 func (s Store) SetSource(name string, src Source) error {

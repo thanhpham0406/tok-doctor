@@ -163,6 +163,12 @@ func TestUsageSnapshotToModelUsage(t *testing.T) {
 	if u.Total.Kind != model.MeasurementMeasured {
 		t.Fatalf("total kind = %q, want measured", u.Total.Kind)
 	}
+	if u.Billable == nil || u.Billable.Input.ValueOrZero() != 10 || u.Billable.CacheRead.ValueOrZero() != 5 || u.Billable.Output.ValueOrZero() != 3 {
+		t.Fatalf("billable = %+v, want codex input/cache/output", u.Billable)
+	}
+	if u.Billable.CacheWrite.Available() {
+		t.Fatalf("cache write = %+v, want unavailable for Codex snapshot", u.Billable.CacheWrite)
+	}
 }
 
 func TestUsageSnapshotZeroIsUnavailableWithoutPresence(t *testing.T) {

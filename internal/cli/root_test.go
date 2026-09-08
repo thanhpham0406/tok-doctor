@@ -238,6 +238,94 @@ func TestUsageAllRejectsSource(t *testing.T) {
 	}
 }
 
+func TestCostJSONCommand(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir codex: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "codex", "basic-session.jsonl"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "sessions", "basic.jsonl"), data, 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"cost", "sess-1", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute cost json: %v", err)
+	}
+	var decoded struct {
+		SessionID string `json:"session_id"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode cost json: %v\n%s", err, stdout.String())
+	}
+	if decoded.SessionID != "sess-1" || decoded.Status != "unavailable" {
+		t.Fatalf("cost result = %+v, want sess-1 unavailable with empty production catalog", decoded)
+	}
+}
+
+func TestCostAllJSONCommand(t *testing.T) {
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"cost", "--all", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute cost all json: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, `"overlap"`) || !strings.Contains(got, `"groups"`) {
+		t.Fatalf("output = %q, want cost collection json", got)
+	}
+}
+
+func TestCostProviderJSONCommand(t *testing.T) {
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"cost", "--provider", "openai", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute cost provider json: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, `"provider": "openai"`) {
+		t.Fatalf("output = %q, want provider json", got)
+	}
+}
+
+func TestPricingJSONCommands(t *testing.T) {
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	for _, args := range [][]string{
+		{"pricing", "status", "--format", "json"},
+		{"pricing", "list", "--format", "json"},
+		{"pricing", "show", "gpt-5.5", "--format", "json"},
+	} {
+		var stdout bytes.Buffer
+		cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("execute %v: %v", args, err)
+		}
+		if !json.Valid(stdout.Bytes()) {
+			t.Fatalf("%v output is not json: %q", args, stdout.String())
+		}
+	}
+}
+
 func TestSessionsCommand(t *testing.T) {
 	withCLIFixtureHome(t)
 	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))

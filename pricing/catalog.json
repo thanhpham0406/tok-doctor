@@ -1,0 +1,32 @@
+{
+  "version": "v1",
+  "generated_at": "2026-09-08T00:00:00Z",
+  "profiles": [
+    {
+      "provider": "openai",
+      "sku": "gpt-5.5",
+      "model": "gpt-5.5",
+      "aliases": [
+        "GPT-5.5"
+      ],
+      "currency": "USD",
+      "rates": {
+        "input_micros_per_million": 5000000,
+        "cached_input_micros_per_million": 500000,
+        "output_micros_per_million": 30000000
+      },
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/models/gpt-5.5",
+          "verified_at": "2026-09-08",
+          "note": "OpenAI API model pricing page"
+        },
+        {
+          "url": "https://openai.com/index/introducing-gpt-5-5/",
+          "verified_at": "2026-09-08",
+          "note": "OpenAI GPT-5.5 announcement"
+        }
+      ]
+    }
+  ]
+}

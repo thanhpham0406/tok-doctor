@@ -98,6 +98,19 @@ Get JSON output:
 ./bin/tok doctor --format json
 ```
 
+Inspect pricing catalog state and API-equivalent cost estimates:
+
+```bash
+./bin/tok pricing status
+./bin/tok pricing update
+./bin/tok pricing list
+./bin/tok pricing show gpt-5.5
+./bin/tok cost <session-id>
+./bin/tok cost --all
+```
+
+`tok cost` never fetches pricing data from the network. Catalog precedence is local override, downloaded last-known-good catalog, embedded fallback, then unavailable. To use custom pricing, set `override_path` under `[pricing]` in the TokDoctor config to a local catalog JSON file.
+
 Open the local Web UI:
 
 ```bash

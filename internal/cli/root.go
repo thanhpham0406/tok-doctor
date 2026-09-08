@@ -10,8 +10,11 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/thanhpham0406/tok-doctor/internal/app"
 	"github.com/thanhpham0406/tok-doctor/internal/model"
+	"github.com/thanhpham0406/tok-doctor/internal/pricing"
+	reportcost "github.com/thanhpham0406/tok-doctor/internal/report/cost"
 	reportinspect "github.com/thanhpham0406/tok-doctor/internal/report/inspect"
 	reportjson "github.com/thanhpham0406/tok-doctor/internal/report/json"
+	reportpricing "github.com/thanhpham0406/tok-doctor/internal/report/pricing"
 	reportsessions "github.com/thanhpham0406/tok-doctor/internal/report/sessions"
 	reportsource "github.com/thanhpham0406/tok-doctor/internal/report/source"
 	"github.com/thanhpham0406/tok-doctor/internal/report/terminal"
@@ -46,6 +49,8 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer, logger *slog.
 	cmd.AddCommand(newUsageCommand(ctx, stdout, tok))
 	cmd.AddCommand(newSessionsCommand(ctx, stdout, tok))
 	cmd.AddCommand(newInspectCommand(ctx, stdout, tok))
+	cmd.AddCommand(newCostCommand(ctx, stdout, tok))
+	cmd.AddCommand(newPricingCommand(stdout, tok))
 	cmd.AddCommand(newSourcesCommand(ctx, stdout, tok))
 	cmd.AddCommand(newSourceCommand(ctx, stdout, tok))
 
@@ -53,6 +58,198 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer, logger *slog.
 	cmd.SetErr(stderr)
 
 	return cmd
+}
+
+func newCostCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
+	var format string
+	var all bool
+	var provider string
+
+	cmd := &cobra.Command{
+		Use:   "cost [session-id]",
+		Short: "Estimate API-equivalent cost",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 && (all || provider != "") {
+				return fmt.Errorf("session-id cannot be combined with --all or --provider")
+			}
+			if all && provider != "" {
+				return fmt.Errorf("--all cannot be combined with --provider")
+			}
+			if len(args) == 0 && !all && provider == "" {
+				return fmt.Errorf("session-id is required unless --all or --provider is set")
+			}
+			switch format {
+			case "terminal":
+				if all || provider != "" {
+					result, err := costCollection(ctx, tok, all, provider)
+					if err != nil {
+						return err
+					}
+					return reportcost.RenderCollection(stdout, result)
+				}
+				result, err := tok.Cost(ctx, args[0])
+				if err != nil {
+					return err
+				}
+				return reportcost.Render(stdout, result)
+			case "json":
+				if all || provider != "" {
+					result, err := costCollection(ctx, tok, all, provider)
+					if err != nil {
+						return err
+					}
+					return reportcost.RenderCollectionJSON(stdout, result)
+				}
+				result, err := tok.Cost(ctx, args[0])
+				if err != nil {
+					return err
+				}
+				return reportcost.RenderJSON(stdout, result)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	cmd.Flags().BoolVar(&all, "all", false, "estimate all resolvable cost grouped by provider and source")
+	cmd.Flags().StringVar(&provider, "provider", "", "estimate all resolvable cost for a pricing provider")
+	return cmd
+}
+
+func costCollection(ctx context.Context, tok *app.App, all bool, provider string) (pricing.CostCollection, error) {
+	if all {
+		return tok.CostAll(ctx)
+	}
+	return tok.CostProvider(ctx, provider)
+}
+
+func newPricingCommand(stdout io.Writer, tok *app.App) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "pricing",
+		Short: "Manage pricing catalog data",
+	}
+	cmd.AddCommand(newPricingStatusCommand(stdout, tok))
+	cmd.AddCommand(newPricingUpdateCommand(stdout, tok))
+	cmd.AddCommand(newPricingListCommand(stdout, tok))
+	cmd.AddCommand(newPricingShowCommand(stdout, tok))
+	return cmd
+}
+
+func newPricingStatusCommand(stdout io.Writer, tok *app.App) *cobra.Command {
+	var format string
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show active pricing catalog status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			status, err := tok.PricingStatus()
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return reportpricing.RenderStatus(stdout, status)
+			case "json":
+				return writeJSON(stdout, status)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	return cmd
+}
+
+func newPricingUpdateCommand(stdout io.Writer, tok *app.App) *cobra.Command {
+	var format string
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Download the maintained TokDoctor pricing catalog",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := tok.PricingUpdate()
+			switch format {
+			case "terminal":
+				if renderErr := reportpricing.RenderUpdate(stdout, result, err); renderErr != nil {
+					return renderErr
+				}
+			case "json":
+				if renderErr := writeJSON(stdout, result); renderErr != nil {
+					return renderErr
+				}
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	return cmd
+}
+
+func newPricingListCommand(stdout io.Writer, tok *app.App) *cobra.Command {
+	var format string
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List pricing profiles",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			active, err := tok.PricingList()
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return reportpricing.RenderList(stdout, active)
+			case "json":
+				return writeJSON(stdout, active)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	return cmd
+}
+
+func newPricingShowCommand(stdout io.Writer, tok *app.App) *cobra.Command {
+	var format string
+	cmd := &cobra.Command{
+		Use:   "show <model>",
+		Short: "Show a resolved pricing profile",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			active, profile, ok, err := tok.PricingShow(args[0])
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return reportpricing.RenderShow(stdout, active, args[0], profile, ok)
+			case "json":
+				return writeJSON(stdout, struct {
+					Catalog pricing.CatalogRef      `json:"catalog"`
+					Model   string                  `json:"model"`
+					Found   bool                    `json:"found"`
+					Profile *pricing.PricingProfile `json:"profile,omitempty"`
+				}{
+					Catalog: pricing.CatalogRef{Source: active.Source, Version: active.Catalog.Version},
+					Model:   args[0],
+					Found:   ok,
+					Profile: profilePtr(profile, ok),
+				})
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	return cmd
+}
+
+func profilePtr(profile pricing.PricingProfile, ok bool) *pricing.PricingProfile {
+	if !ok {
+		return nil
+	}
+	return &profile
 }
 
 func newSourcesCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {

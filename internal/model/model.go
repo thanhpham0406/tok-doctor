@@ -172,11 +172,19 @@ func (e Evidence) ConsistentWithKind(kind MeasurementKind) bool {
 }
 
 type Usage struct {
-	Input     Measurement `json:"input"`
-	Cached    Measurement `json:"cached"`
-	Output    Measurement `json:"output"`
-	Reasoning Measurement `json:"reasoning"`
-	Total     Measurement `json:"total"`
+	Input     Measurement    `json:"input"`
+	Cached    Measurement    `json:"cached"`
+	Output    Measurement    `json:"output"`
+	Reasoning Measurement    `json:"reasoning"`
+	Total     Measurement    `json:"total"`
+	Billable  *BillableUsage `json:"billable,omitempty"`
+}
+
+type BillableUsage struct {
+	Input      Measurement `json:"input"`
+	CacheRead  Measurement `json:"cache_read"`
+	CacheWrite Measurement `json:"cache_write"`
+	Output     Measurement `json:"output"`
 }
 
 func (u Usage) HasAuthoritativeUsage() bool {
@@ -202,6 +210,7 @@ func (u Usage) MarshalJSON() ([]byte, error) {
 		Output       *int64            `json:"output"`
 		Reasoning    *int64            `json:"reasoning"`
 		Total        *int64            `json:"total"`
+		Billable     *BillableUsage    `json:"billable,omitempty"`
 		Measurements *measurementsJSON `json:"measurements,omitempty"`
 	}
 	encoded := usageJSON{
@@ -210,6 +219,7 @@ func (u Usage) MarshalJSON() ([]byte, error) {
 		Output:    u.Output.Value,
 		Reasoning: u.Reasoning.Value,
 		Total:     u.Total.Value,
+		Billable:  u.Billable,
 	}
 	if m := encodeMeasurements(u); m != nil {
 		encoded.Measurements = m
@@ -255,11 +265,12 @@ func encodeMeasurement(m Measurement) *measurementDetail {
 
 func (u *Usage) UnmarshalJSON(data []byte) error {
 	type usageJSON struct {
-		Input     *int64 `json:"input"`
-		Cached    *int64 `json:"cached"`
-		Output    *int64 `json:"output"`
-		Reasoning *int64 `json:"reasoning"`
-		Total     *int64 `json:"total"`
+		Input     *int64         `json:"input"`
+		Cached    *int64         `json:"cached"`
+		Output    *int64         `json:"output"`
+		Reasoning *int64         `json:"reasoning"`
+		Total     *int64         `json:"total"`
+		Billable  *BillableUsage `json:"billable"`
 	}
 	var raw usageJSON
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -271,6 +282,7 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		Output:    measurementFromJSON(raw.Output),
 		Reasoning: measurementFromJSON(raw.Reasoning),
 		Total:     measurementFromJSON(raw.Total),
+		Billable:  raw.Billable,
 	}
 	return nil
 }
@@ -303,6 +315,18 @@ func usageWithKind(input, cached, output int64, reasoning *int64, total int64, k
 	return usage
 }
 
+func NewBillableUsage(input, cacheRead, output int64, cacheWrite *int64, kind MeasurementKind) *BillableUsage {
+	b := &BillableUsage{
+		Input:     NewMeasurement(input, kind),
+		CacheRead: NewMeasurement(cacheRead, kind),
+		Output:    NewMeasurement(output, kind),
+	}
+	if cacheWrite != nil {
+		b.CacheWrite = NewMeasurement(*cacheWrite, kind)
+	}
+	return b
+}
+
 func SumUsage(usages []Usage) Usage {
 	var sum Usage
 	sum.Input = sumMeasurements(metricValues(usages, func(u Usage) Measurement { return u.Input }))
@@ -310,7 +334,55 @@ func SumUsage(usages []Usage) Usage {
 	sum.Output = sumMeasurements(metricValues(usages, func(u Usage) Measurement { return u.Output }))
 	sum.Reasoning = sumMeasurements(metricValues(usages, func(u Usage) Measurement { return u.Reasoning }))
 	sum.Total = sumMeasurements(metricValues(usages, func(u Usage) Measurement { return u.Total }))
+	sum.Billable = SumBillableUsage(billableValues(usages))
 	return sum
+}
+
+func billableValues(usages []Usage) []*BillableUsage {
+	values := make([]*BillableUsage, 0, len(usages))
+	for _, usage := range usages {
+		values = append(values, usage.Billable)
+	}
+	return values
+}
+
+func SumBillableUsage(usages []*BillableUsage) *BillableUsage {
+	var values []BillableUsage
+	for _, usage := range usages {
+		if usage != nil && usage.HasUsage() {
+			values = append(values, *usage)
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	return &BillableUsage{
+		Input:      sumBillableMeasurements(values, func(u BillableUsage) Measurement { return u.Input }),
+		CacheRead:  sumBillableMeasurements(values, func(u BillableUsage) Measurement { return u.CacheRead }),
+		CacheWrite: sumBillableMeasurements(values, func(u BillableUsage) Measurement { return u.CacheWrite }),
+		Output:     sumBillableMeasurements(values, func(u BillableUsage) Measurement { return u.Output }),
+	}
+}
+
+func (u BillableUsage) HasUsage() bool {
+	return u.Input.Available() || u.CacheRead.Available() || u.CacheWrite.Available() || u.Output.Available()
+}
+
+func sumBillableMeasurements(usages []BillableUsage, pick func(BillableUsage) Measurement) Measurement {
+	var total int64
+	seen := false
+	for _, usage := range usages {
+		m := pick(usage)
+		if !m.Available() {
+			continue
+		}
+		seen = true
+		total += m.ValueOrZero()
+	}
+	if !seen {
+		return Measurement{}
+	}
+	return NewMeasurement(total, MeasurementDerived)
 }
 
 func metricValues(usages []Usage, pick func(Usage) Measurement) []Measurement {
