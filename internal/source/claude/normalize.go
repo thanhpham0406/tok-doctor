@@ -30,17 +30,49 @@ func (s UsageSnapshot) HasPositiveUsage() bool {
 }
 
 func (s UsageSnapshot) ToModelUsage() model.Usage {
+	return s.toModelUsage(model.MeasurementMeasured)
+}
+
+func (s UsageSnapshot) ToModelUsageWithEvidence(recordID string) model.Usage {
+	usage := s.toModelUsage(model.MeasurementMeasured)
+	if recordID == "" {
+		return usage
+	}
+	evidence := sourceValueEvidence(recordID)
+	attachEvidence(&usage, evidence)
+	return usage
+}
+
+func (s UsageSnapshot) toModelUsage(kind model.MeasurementKind) model.Usage {
 	if !s.HasUsage {
 		return model.Usage{}
 	}
-	return model.Usage{
-		Input:       s.Input,
-		Cached:      s.Cached,
-		Output:      s.Output,
-		Reasoning:   nil,
-		Total:       s.Total,
-		Measurement: model.MeasurementMeasured,
-		Confidence:  model.ConfidenceMeasured,
+	switch kind {
+	case model.MeasurementDerived:
+		return model.DerivedUsage(s.Input, s.Cached, s.Output, nil, s.Total)
+	default:
+		return model.MeasuredUsage(s.Input, s.Cached, s.Output, nil, s.Total)
+	}
+}
+
+func attachEvidence(u *model.Usage, evidence model.Evidence) {
+	attachField := func(m *model.Measurement) {
+		if !m.Available() {
+			return
+		}
+		m.Evidence = append(m.Evidence, evidence)
+	}
+	attachField(&u.Input)
+	attachField(&u.Cached)
+	attachField(&u.Output)
+	attachField(&u.Total)
+}
+
+func sourceValueEvidence(recordID string) model.Evidence {
+	return model.Evidence{
+		Kind:   model.EvidenceSourceValue,
+		Source: "claude_session",
+		Record: recordID,
 	}
 }
 
@@ -52,5 +84,5 @@ func SumSnapshots(snaps []UsageSnapshot) model.Usage {
 		}
 		total = total.add(s)
 	}
-	return total.ToModelUsage()
+	return total.toModelUsage(model.MeasurementDerived)
 }

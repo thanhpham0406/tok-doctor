@@ -14,11 +14,7 @@ func TestRenderUsesThousandsSeparatorsAndUnavailableValues(t *testing.T) {
 		{
 			ID:     "session-with-long-id",
 			Source: "codex",
-			Usage: model.Usage{
-				Input:      111249946,
-				Total:      111249946,
-				Confidence: model.ConfidenceMeasured,
-			},
+			Usage:  model.MeasuredUsage(111249946, 0, 0, nil, 111249946),
 		},
 		{
 			ID:     "empty",

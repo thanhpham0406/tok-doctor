@@ -78,18 +78,18 @@ func TestParseSessionUsageEmptyFile(t *testing.T) {
 
 func TestUsageSnapshotToModelUsage(t *testing.T) {
 	u := UsageSnapshot{Input: 10, Cached: 5, Output: 3, Total: 18, HasUsage: true}.ToModelUsage()
-	if u.Input != 10 || u.Cached != 5 || u.Output != 3 || u.Total != 18 {
+	if u.Input.ValueOrZero() != 10 || u.Cached.ValueOrZero() != 5 || u.Output.ValueOrZero() != 3 || u.Total.ValueOrZero() != 18 {
 		t.Fatalf("usage = %+v", u)
 	}
-	if u.Confidence != model.ConfidenceMeasured {
-		t.Fatalf("confidence = %q, want measured", u.Confidence)
+	if u.Total.Kind != model.MeasurementMeasured {
+		t.Fatalf("total kind = %q, want measured", u.Total.Kind)
 	}
 }
 
-func TestUsageSnapshotZeroHasEmptyConfidence(t *testing.T) {
+func TestUsageSnapshotZeroIsUnavailableWithoutPresence(t *testing.T) {
 	u := UsageSnapshot{}.ToModelUsage()
-	if u.Confidence != "" {
-		t.Fatalf("confidence = %q, want empty for zero snapshot", u.Confidence)
+	if u.HasUsage() {
+		t.Fatalf("usage = %+v, want unavailable", u)
 	}
 }
 
@@ -99,8 +99,11 @@ func TestSumSnapshotsAggregates(t *testing.T) {
 		{Input: 20, Cached: 2, Output: 4, Total: 26, HasUsage: true},
 	}
 	u := SumSnapshots(snaps)
-	if u.Input != 30 || u.Cached != 7 || u.Output != 7 || u.Total != 44 {
+	if u.Input.ValueOrZero() != 30 || u.Cached.ValueOrZero() != 7 || u.Output.ValueOrZero() != 7 || u.Total.ValueOrZero() != 44 {
 		t.Fatalf("usage = %+v, want input=30 cached=7 output=7 total=44", u)
+	}
+	if u.Total.Kind != model.MeasurementDerived {
+		t.Fatalf("total kind = %q, want derived aggregate", u.Total.Kind)
 	}
 }
 
@@ -113,11 +116,11 @@ func TestParseSessionExplicitZeroUsageIsMeasured(t *testing.T) {
 		t.Fatal("HasUsage = false, want true for explicit usage object")
 	}
 	u := snap.ToModelUsage()
-	if u.Confidence != model.ConfidenceMeasured {
-		t.Fatalf("confidence = %q, want measured", u.Confidence)
+	if u.Total.Kind != model.MeasurementMeasured {
+		t.Fatalf("total kind = %q, want measured", u.Total.Kind)
 	}
-	if u.Total != 0 {
-		t.Fatalf("total = %d, want explicit zero", u.Total)
+	if u.Total.ValueOrZero() != 0 {
+		t.Fatalf("total = %d, want explicit zero", u.Total.ValueOrZero())
 	}
 }
 
@@ -188,11 +191,11 @@ func TestSnapshotHasNoReasoningField(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	u := snap.ToModelUsage()
-	if u.Reasoning != nil {
-		t.Fatalf("reasoning = %v, want nil (Claude session format does not expose a separate reasoning field)", *u.Reasoning)
+	if u.Reasoning.Value != nil {
+		t.Fatalf("reasoning = %v, want unavailable (Claude session format does not expose a separate reasoning field)", u.Reasoning.ValueOrZero())
 	}
-	if u.Output != 200 {
-		t.Fatalf("output = %d, want 200 from source output_tokens", u.Output)
+	if u.Output.ValueOrZero() != 200 {
+		t.Fatalf("output = %d, want 200 from source output_tokens", u.Output.ValueOrZero())
 	}
 }
 

@@ -110,6 +110,7 @@ func (s *Source) ReadSessions(ctx context.Context) ([]model.Session, error) {
 			continue
 		}
 		id := stableFileID(ref)
+		turns := claudeTurns(id, parsed)
 		session := model.Session{
 			ID:        id,
 			Source:    s.Name(),
@@ -117,14 +118,15 @@ func (s *Source) ReadSessions(ctx context.Context) ([]model.Session, error) {
 			StartedAt: parseTime(parsed.StartedAt),
 			UpdatedAt: parseTime(parsed.UpdatedAt),
 			Model:     parsed.Model,
-			Usage:     parsed.Usage.ToModelUsage(),
-			Turns:     claudeTurns(id, parsed),
+			Usage:     parsed.Usage.toModelUsage(model.MeasurementDerived),
+			Turns:     turns,
 		}
 		if session.UpdatedAt == nil {
 			session.UpdatedAt = fileModTime(ref.Path)
 		}
-		if session.Usage.Confidence != "" {
-			session.Evidence = []model.Evidence{{Kind: "local_session_usage", Source: "claude_session"}}
+		attachAggregateEvidence(&session.Usage, turns)
+		if session.Usage.HasAuthoritativeUsage() {
+			session.Evidence = aggregateSessionEvidence(turns)
 		}
 		sessions = append(sessions, session)
 	}
@@ -138,27 +140,57 @@ func claudeTurns(sessionID string, parsed ParsedSession) []model.Turn {
 	}
 	turns := make([]model.Turn, 0, len(parsed.Invocations))
 	for i, inv := range parsed.Invocations {
+		recordID := inv.ID
+		if recordID == "" {
+			recordID = sessionID + "#" + strconv.Itoa(i+1)
+		}
 		turn := model.Turn{
-			Sequence:    i + 1,
-			Timestamp:   parseTime(inv.Timestamp),
-			Model:       inv.Model,
-			Usage:       inv.Snapshot.ToModelUsage(),
-			Measurement: model.MeasurementMeasured,
-			Confidence:  model.ConfidenceMeasured,
-			Evidence:    []model.Evidence{{Kind: "local_model_usage", Source: "claude_session"}},
+			Sequence:  i + 1,
+			Timestamp: parseTime(inv.Timestamp),
+			Model:     inv.Model,
+			Usage:     inv.Snapshot.ToModelUsageWithEvidence(recordID),
 		}
-		if inv.ID != "" {
-			turn.ID = inv.ID
-		} else {
-			turn.ID = sessionID + "#" + strconv.Itoa(i+1)
-		}
+		turn.ID = recordID
 		if inv.Conflict {
-			turn.Confidence = ""
-			turn.Evidence = append(turn.Evidence, model.Evidence{Kind: "duplicate_conflict", Source: "claude_session"})
+			conflict := model.Evidence{Kind: "duplicate_conflict", Source: "claude_session"}
+			for _, m := range []*model.Measurement{&turn.Usage.Input, &turn.Usage.Cached, &turn.Usage.Output, &turn.Usage.Total} {
+				if !m.Available() {
+					continue
+				}
+				m.Evidence = append(m.Evidence, conflict)
+			}
 		}
 		turns = append(turns, turn)
 	}
 	return turns
+}
+
+func attachAggregateEvidence(u *model.Usage, turns []model.Turn) {
+	if len(turns) == 0 || !u.HasAuthoritativeUsage() {
+		return
+	}
+	ev := model.Evidence{
+		Kind:      model.EvidenceAggregate,
+		Source:    "turns",
+		Operation: model.AggregateSum,
+		Count:     len(turns),
+	}
+	u.Input.Evidence = append(u.Input.Evidence, ev)
+	u.Cached.Evidence = append(u.Cached.Evidence, ev)
+	u.Output.Evidence = append(u.Output.Evidence, ev)
+	u.Total.Evidence = append(u.Total.Evidence, ev)
+}
+
+func aggregateSessionEvidence(turns []model.Turn) []model.Evidence {
+	if len(turns) == 0 {
+		return nil
+	}
+	return []model.Evidence{{
+		Kind:      model.EvidenceAggregate,
+		Source:    "turns",
+		Operation: model.AggregateSum,
+		Count:     len(turns),
+	}}
 }
 
 func (s *Source) capabilities() *source.Capabilities {

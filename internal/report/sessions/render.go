@@ -33,11 +33,11 @@ func Render(w io.Writer, result model.SessionsResult) error {
 			shortID(session.ID),
 			formatUpdated(session.UpdatedAt),
 			formatModel(session.Model),
-			formatUsageMetric(session.Usage.Input, session.Usage.Confidence),
-			formatUsageMetric(session.Usage.Cached, session.Usage.Confidence),
-			formatUsageMetric(session.Usage.Output, session.Usage.Confidence),
+			formatUsageMetric(session.Usage.Input),
+			formatUsageMetric(session.Usage.Cached),
+			formatUsageMetric(session.Usage.Output),
 			reportusage.FormatReasoning(session.Usage.Reasoning),
-			formatUsageMetric(session.Usage.Total, session.Usage.Confidence),
+			formatUsageMetric(session.Usage.Total),
 		); err != nil {
 			return err
 		}
@@ -80,9 +80,6 @@ func formatModel(modelName string) string {
 	return modelName
 }
 
-func formatUsageMetric(value int64, confidence model.Confidence) string {
-	if confidence == "" {
-		return "-"
-	}
-	return reportusage.FormatTokenCount(value)
+func formatUsageMetric(metric model.Measurement) string {
+	return reportusage.FormatTokenCount(metric)
 }

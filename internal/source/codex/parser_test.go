@@ -112,10 +112,10 @@ func TestParseSessionUsageExplicitZero(t *testing.T) {
 	if !u.HasAuthoritativeUsage() {
 		t.Fatal("model usage should be authoritative for explicit zero token_count")
 	}
-	if u.Input != 0 || u.Cached != 0 || u.Output != 0 || u.Total != 0 {
+	if u.Input.ValueOrZero() != 0 || u.Cached.ValueOrZero() != 0 || u.Output.ValueOrZero() != 0 || u.Total.ValueOrZero() != 0 {
 		t.Fatalf("usage = %+v, want explicit zero values", u)
 	}
-	if u.Reasoning == nil || *u.Reasoning != 0 {
+	if u.Reasoning.Value == nil || u.Reasoning.ValueOrZero() != 0 {
 		t.Fatalf("reasoning = %v, want pointer to explicit zero", u.Reasoning)
 	}
 }
@@ -154,29 +154,29 @@ func TestParseSessionUsageEmptyFile(t *testing.T) {
 func TestUsageSnapshotToModelUsage(t *testing.T) {
 	r := int64(10)
 	u := UsageSnapshot{Input: 10, Cached: 5, Output: 3, Reasoning: &r, Total: 18}.ToModelUsage()
-	if u.Input != 10 || u.Cached != 5 || u.Output != 3 || u.Total != 18 {
+	if u.Input.ValueOrZero() != 10 || u.Cached.ValueOrZero() != 5 || u.Output.ValueOrZero() != 3 || u.Total.ValueOrZero() != 18 {
 		t.Fatalf("usage = %+v", u)
 	}
-	if u.Reasoning == nil || *u.Reasoning != 10 {
+	if u.Reasoning.Value == nil || u.Reasoning.ValueOrZero() != 10 {
 		t.Fatalf("reasoning = %v, want pointer to 10", u.Reasoning)
 	}
-	if u.Confidence != model.ConfidenceMeasured {
-		t.Fatalf("confidence = %q, want measured", u.Confidence)
+	if u.Total.Kind != model.MeasurementMeasured {
+		t.Fatalf("total kind = %q, want measured", u.Total.Kind)
 	}
 }
 
-func TestUsageSnapshotZeroHasEmptyConfidence(t *testing.T) {
+func TestUsageSnapshotZeroIsUnavailableWithoutPresence(t *testing.T) {
 	u := UsageSnapshot{}.ToModelUsage()
-	if u.Confidence != "" {
-		t.Fatalf("confidence = %q, want empty for zero snapshot", u.Confidence)
+	if u.HasUsage() {
+		t.Fatalf("usage = %+v, want unavailable for zero snapshot without presence", u)
 	}
 }
 
 func TestUsageSnapshotExplicitZeroIsMeasured(t *testing.T) {
 	zero := int64(0)
 	u := UsageSnapshot{Reasoning: &zero, HasUsage: true}.ToModelUsage()
-	if u.Confidence != model.ConfidenceMeasured {
-		t.Fatalf("confidence = %q, want measured", u.Confidence)
+	if u.Total.Kind != model.MeasurementMeasured {
+		t.Fatalf("total kind = %q, want measured", u.Total.Kind)
 	}
 	if !u.HasAuthoritativeUsage() {
 		t.Fatal("explicit zero usage should be authoritative")
@@ -185,15 +185,15 @@ func TestUsageSnapshotExplicitZeroIsMeasured(t *testing.T) {
 
 func TestUsageSnapshotMissingReasoningStaysMissing(t *testing.T) {
 	u := UsageSnapshot{Input: 10, Cached: 5, Output: 3, Total: 18}.ToModelUsage()
-	if u.Reasoning != nil {
-		t.Fatalf("reasoning = %v, want nil when snapshot did not expose reasoning", *u.Reasoning)
+	if u.Reasoning.Value != nil {
+		t.Fatalf("reasoning = %v, want unavailable when snapshot did not expose reasoning", u.Reasoning.ValueOrZero())
 	}
 }
 
 func TestUsageSnapshotExplicitZeroReasoningPreserved(t *testing.T) {
 	zero := int64(0)
 	u := UsageSnapshot{Input: 10, Cached: 5, Output: 3, Reasoning: &zero, Total: 18}.ToModelUsage()
-	if u.Reasoning == nil || *u.Reasoning != 0 {
+	if u.Reasoning.Value == nil || u.Reasoning.ValueOrZero() != 0 {
 		t.Fatalf("reasoning = %v, want pointer to 0 (explicit zero)", u.Reasoning)
 	}
 }
@@ -204,8 +204,11 @@ func TestSumSnapshotsAggregates(t *testing.T) {
 		{Input: 20, Cached: 2, Output: 4, Total: 26},
 	}
 	u := SumSnapshots(snaps)
-	if u.Input != 30 || u.Cached != 7 || u.Output != 7 || u.Total != 44 {
+	if u.Input.ValueOrZero() != 30 || u.Cached.ValueOrZero() != 7 || u.Output.ValueOrZero() != 7 || u.Total.ValueOrZero() != 44 {
 		t.Fatalf("usage = %+v, want input=30 cached=7 output=7 total=44", u)
+	}
+	if u.Total.Kind != model.MeasurementDerived {
+		t.Fatalf("total kind = %q, want derived", u.Total.Kind)
 	}
 }
 
@@ -217,11 +220,11 @@ func TestSumSnapshotsAggregatesReasoning(t *testing.T) {
 		{Input: 20, Cached: 2, Output: 4, Reasoning: &r2, Total: 32},
 	}
 	u := SumSnapshots(snaps)
-	if u.Reasoning == nil || *u.Reasoning != 10 {
+	if u.Reasoning.Value == nil || u.Reasoning.ValueOrZero() != 10 {
 		t.Fatalf("reasoning = %v, want pointer to 10", u.Reasoning)
 	}
-	if u.Total != 54 {
-		t.Fatalf("total = %d, want 54", u.Total)
+	if u.Total.ValueOrZero() != 54 {
+		t.Fatalf("total = %d, want 54", u.Total.ValueOrZero())
 	}
 }
 
@@ -232,7 +235,7 @@ func TestSumSnapshotsPreservesReasoningAvailability(t *testing.T) {
 		{Input: 20, Cached: 2, Output: 4, Reasoning: &r, Total: 26},
 	}
 	u := SumSnapshots(snaps)
-	if u.Reasoning == nil || *u.Reasoning != 50 {
+	if u.Reasoning.Value == nil || u.Reasoning.ValueOrZero() != 50 {
 		t.Fatalf("reasoning = %v, want pointer to 50 (single source reported it)", u.Reasoning)
 	}
 }

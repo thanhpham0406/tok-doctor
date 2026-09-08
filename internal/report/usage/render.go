@@ -28,29 +28,33 @@ func Render(w io.Writer, result model.UsageResult) error {
 }
 
 func renderEntry(w io.Writer, entry model.UsageEntry) error {
-	if entry.Usage.Confidence == "" {
+	if !entry.Usage.HasUsage() {
 		_, err := fmt.Fprintf(w, "%s: no usage data available\n", entry.Source)
 		return err
 	}
-	_, err := fmt.Fprintf(w, "%s\n  input:      %s\n  cached:     %s\n  output:     %s\n  reasoning:  %s\n  total:      %s\n  confidence: %s\n",
+	_, err := fmt.Fprintf(w, "%s\n  input:       %s\n  cached:      %s\n  output:      %s\n  reasoning:   %s\n  total:       %s\n  measurement: %s\n",
 		entry.Source,
 		FormatTokenCount(entry.Usage.Input),
 		FormatTokenCount(entry.Usage.Cached),
 		FormatTokenCount(entry.Usage.Output),
 		FormatReasoning(entry.Usage.Reasoning),
 		FormatTokenCount(entry.Usage.Total),
-		entry.Usage.Confidence)
+		entry.Usage.Total.DisplayKind())
 	return err
 }
 
-func FormatReasoning(r *int64) string {
-	if r == nil {
+func FormatReasoning(r model.Measurement) string {
+	if !r.Available() {
 		return "-"
 	}
-	return FormatTokenCount(*r)
+	return FormatTokenCount(r)
 }
 
-func FormatTokenCount(n int64) string {
+func FormatTokenCount(m model.Measurement) string {
+	if !m.Available() {
+		return "-"
+	}
+	n := m.ValueOrZero()
 	if n == 0 {
 		return "0"
 	}

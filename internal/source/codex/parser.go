@@ -168,10 +168,11 @@ func deltaSnapshot(prev, curr snapshot) (UsageSnapshot, bool) {
 		return UsageSnapshot{}, false
 	}
 	out := UsageSnapshot{
-		Input:  curr.Snap.Input - prev.Snap.Input,
-		Cached: curr.Snap.Cached - prev.Snap.Cached,
-		Output: curr.Snap.Output - prev.Snap.Output,
-		Total:  curr.Snap.Total - prev.Snap.Total,
+		Input:    curr.Snap.Input - prev.Snap.Input,
+		Cached:   curr.Snap.Cached - prev.Snap.Cached,
+		Output:   curr.Snap.Output - prev.Snap.Output,
+		Total:    curr.Snap.Total - prev.Snap.Total,
+		HasUsage: true,
 	}
 	if curr.Snap.Reasoning != nil {
 		if prev.Snap.Reasoning == nil {

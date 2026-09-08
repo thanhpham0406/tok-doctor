@@ -28,22 +28,20 @@ func TestFormatTokenCount(t *testing.T) {
 	}
 
 	for input, want := range tests {
-		if got := FormatTokenCount(input); got != want {
+		if got := FormatTokenCount(model.NewMeasurement(input, model.MeasurementMeasured)); got != want {
 			t.Fatalf("FormatTokenCount(%d) = %q, want %q", input, got, want)
 		}
 	}
 }
 
 func TestFormatReasoning(t *testing.T) {
-	zero := int64(0)
-	many := int64(1234)
-	if got := FormatReasoning(nil); got != "-" {
+	if got := FormatReasoning(model.Measurement{}); got != "-" {
 		t.Fatalf("FormatReasoning(nil) = %q, want %q", got, "-")
 	}
-	if got := FormatReasoning(&zero); got != "0" {
+	if got := FormatReasoning(model.NewMeasurement(0, model.MeasurementMeasured)); got != "0" {
 		t.Fatalf("FormatReasoning(&0) = %q, want %q", got, "0")
 	}
-	if got := FormatReasoning(&many); got != "1,234" {
+	if got := FormatReasoning(model.NewMeasurement(1234, model.MeasurementMeasured)); got != "1,234" {
 		t.Fatalf("FormatReasoning(&1234) = %q, want %q", got, "1,234")
 	}
 }
@@ -51,14 +49,7 @@ func TestFormatReasoning(t *testing.T) {
 func TestRenderUsesThousandsSeparators(t *testing.T) {
 	var out bytes.Buffer
 	reasoning := int64(0)
-	result := Single("codex", model.Usage{
-		Input:      1200,
-		Cached:     300,
-		Output:     450,
-		Reasoning:  &reasoning,
-		Total:      1950,
-		Confidence: model.ConfidenceMeasured,
-	})
+	result := Single("codex", model.MeasuredUsage(1200, 300, 450, &reasoning, 1950))
 
 	if err := Render(&out, result); err != nil {
 		t.Fatalf("Render: %v", err)
@@ -78,21 +69,15 @@ func TestRenderRendersReasoningStates(t *testing.T) {
 		r    *int64
 		want string
 	}{
-		{"nil", nil, "reasoning:  -"},
-		{"zero", ptr(int64(0)), "reasoning:  0"},
-		{"nonzero", ptr(int64(1234)), "reasoning:  1,234"},
+		{"nil", nil, "reasoning:   -"},
+		{"zero", ptr(int64(0)), "reasoning:   0"},
+		{"nonzero", ptr(int64(1234)), "reasoning:   1,234"},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var out bytes.Buffer
-			result := Single("codex", model.Usage{
-				Input:      100,
-				Output:     50,
-				Reasoning:  c.r,
-				Total:      150,
-				Confidence: model.ConfidenceMeasured,
-			})
+			result := Single("codex", model.MeasuredUsage(100, 0, 50, c.r, 150))
 			if err := Render(&out, result); err != nil {
 				t.Fatalf("Render: %v", err)
 			}

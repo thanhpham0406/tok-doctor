@@ -341,6 +341,7 @@ func newInspectCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 		format   string
 		allTurns bool
 		turn     int
+		evidence bool
 	)
 
 	cmd := &cobra.Command{
@@ -358,8 +359,9 @@ func newInspectCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 			switch format {
 			case "terminal":
 				return reportinspect.Render(stdout, session, reportinspect.Options{
-					AllTurns: allTurns,
-					Turn:     turn,
+					AllTurns:     allTurns,
+					Turn:         turn,
+					ShowEvidence: evidence,
 				})
 			case "json":
 				return reportinspect.RenderJSON(stdout, session)
@@ -371,5 +373,6 @@ func newInspectCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
 	cmd.Flags().BoolVar(&allTurns, "all-turns", false, "show every turn for the session")
 	cmd.Flags().IntVar(&turn, "turn", 0, "show a single turn by sequence number")
+	cmd.Flags().BoolVar(&evidence, "evidence", false, "include evidence/provenance in the rendered output")
 	return cmd
 }

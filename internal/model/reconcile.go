@@ -19,36 +19,36 @@ func (c UsageComparison) Matches() bool {
 }
 
 func ReconcileUsage(s Session) UsageComparison {
-	var sum Usage
-	for _, turn := range s.Turns {
-		sum.Input += turn.Usage.Input
-		sum.Cached += turn.Usage.Cached
-		sum.Output += turn.Usage.Output
-		sum.Total += turn.Usage.Total
-		if turn.Usage.Reasoning != nil {
-			if sum.Reasoning == nil {
-				reasoning := *turn.Usage.Reasoning
-				sum.Reasoning = &reasoning
-			} else {
-				*sum.Reasoning += *turn.Usage.Reasoning
-			}
-		}
+	sum := SumUsage(turnUsages(s.Turns))
+	return UsageComparison{
+		InputDelta:     sum.Input.ValueOrZero() - s.Usage.Input.ValueOrZero(),
+		CachedDelta:    sum.Cached.ValueOrZero() - s.Usage.Cached.ValueOrZero(),
+		OutputDelta:    sum.Output.ValueOrZero() - s.Usage.Output.ValueOrZero(),
+		ReasoningDelta: reasoningDelta(s.Usage.Reasoning, sum.Reasoning),
+		TotalDelta:     sum.Total.ValueOrZero() - s.Usage.Total.ValueOrZero(),
 	}
-	comparison := UsageComparison{
-		InputDelta:  sum.Input - s.Usage.Input,
-		CachedDelta: sum.Cached - s.Usage.Cached,
-		OutputDelta: sum.Output - s.Usage.Output,
-		TotalDelta:  sum.Total - s.Usage.Total,
+}
+
+func turnUsages(turns []Turn) []Usage {
+	usages := make([]Usage, 0, len(turns))
+	for _, turn := range turns {
+		usages = append(usages, turn.Usage)
 	}
-	if s.Usage.Reasoning == nil && sum.Reasoning != nil {
+	return usages
+}
+
+func reasoningDelta(session, sum Measurement) *int64 {
+	if !session.Available() && sum.Available() {
 		zero := int64(0)
-		comparison.ReasoningDelta = &zero
-	} else if s.Usage.Reasoning != nil && sum.Reasoning == nil {
-		reasoning := -*s.Usage.Reasoning
-		comparison.ReasoningDelta = &reasoning
-	} else if s.Usage.Reasoning != nil && sum.Reasoning != nil {
-		reasoning := *sum.Reasoning - *s.Usage.Reasoning
-		comparison.ReasoningDelta = &reasoning
+		return &zero
 	}
-	return comparison
+	if session.Available() && !sum.Available() {
+		reasoning := -session.ValueOrZero()
+		return &reasoning
+	}
+	if session.Available() && sum.Available() {
+		reasoning := sum.ValueOrZero() - session.ValueOrZero()
+		return &reasoning
+	}
+	return nil
 }

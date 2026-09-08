@@ -125,6 +125,7 @@ func (s *Source) ReadSessions(ctx context.Context) ([]model.Session, error) {
 		if id == "" {
 			id = stableFileID(ref)
 		}
+		finalRecordID := finalSnapshotRecordID(parsed)
 		session := model.Session{
 			ID:        id,
 			Source:    s.Name(),
@@ -132,14 +133,11 @@ func (s *Source) ReadSessions(ctx context.Context) ([]model.Session, error) {
 			StartedAt: parseTime(parsed.StartedAt),
 			UpdatedAt: parseTime(parsed.UpdatedAt),
 			Model:     parsed.Model,
-			Usage:     parsed.Usage.ToModelUsage(),
+			Usage:     parsed.Usage.ToModelUsageWithEvidence(finalRecordID),
 			Turns:     reconstructTurns(id, parsed),
 		}
 		if session.UpdatedAt == nil {
 			session.UpdatedAt = fileModTime(ref.Path)
-		}
-		if session.Usage.Confidence != "" {
-			session.Evidence = []model.Evidence{{Kind: "provider_usage", Source: "codex_rollout"}}
 		}
 		sessions = append(sessions, session)
 	}
@@ -147,35 +145,58 @@ func (s *Source) ReadSessions(ctx context.Context) ([]model.Session, error) {
 	return sessions, nil
 }
 
+func finalSnapshotRecordID(parsed ParsedSession) string {
+	if len(parsed.Snapshots) == 0 || !parsed.Usage.HasUsage {
+		return ""
+	}
+	for i := len(parsed.Snapshots) - 1; i >= 0; i-- {
+		if parsed.Snapshots[i].Snap.Total == parsed.Usage.Total {
+			return snapshotRecordID(i + 1)
+		}
+	}
+	return ""
+}
+
+func snapshotRecordID(index int) string {
+	return "codex_rollout#snap:" + strconv.Itoa(index)
+}
+
 func reconstructTurns(sessionID string, parsed ParsedSession) []model.Turn {
 	if len(parsed.Snapshots) == 0 {
 		return nil
 	}
 	turns := make([]model.Turn, 0, len(parsed.Snapshots))
-	prev := snapshot{}
 	for i, curr := range parsed.Snapshots {
 		turn := model.Turn{
-			ID:          sessionID + "#" + strconv.Itoa(i+1),
-			Sequence:    i + 1,
-			Timestamp:   parseTime(curr.Timestamp),
-			Measurement: model.MeasurementDerived,
-			Confidence:  model.ConfidenceHigh,
-			Evidence:    []model.Evidence{{Kind: "cumulative_usage_snapshot", Source: "codex_rollout"}},
+			ID:        sessionID + "#" + strconv.Itoa(i+1),
+			Sequence:  i + 1,
+			Timestamp: parseTime(curr.Timestamp),
 		}
 		if parsed.Model != "" {
 			turn.Model = parsed.Model
 		}
-		delta, ok := deltaSnapshot(prev, curr)
+		currRecord := snapshotRecordID(i + 1)
+		delta, ok := deltaSnapshot(prevSnapshot(parsed.Snapshots, i), curr)
 		if !ok {
-			turn.Measurement = model.MeasurementUnknown
-			turn.Confidence = ""
+			turn.Usage = model.Usage{}
 		} else {
-			turn.Usage = delta.toModelUsage(model.MeasurementDerived, model.ConfidenceHigh)
+			turn.Usage = delta.toModelUsage(model.MeasurementDerived)
+			prevRecord := ""
+			if i > 0 {
+				prevRecord = snapshotRecordID(i)
+			}
+			attachCumulativeDelta(&turn.Usage, prevRecord, currRecord)
 		}
 		turns = append(turns, turn)
-		prev = curr
 	}
 	return turns
+}
+
+func prevSnapshot(snaps []snapshot, i int) snapshot {
+	if i <= 0 {
+		return snapshot{}
+	}
+	return snaps[i-1]
 }
 
 func (s *Source) capabilities() *source.Capabilities {

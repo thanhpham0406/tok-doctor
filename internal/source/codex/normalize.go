@@ -15,22 +15,73 @@ func (s UsageSnapshot) ToModelUsage() model.Usage {
 	if !s.hasAuthoritativeUsage() {
 		return model.Usage{}
 	}
-	return model.Usage{
-		Input:       s.Input,
-		Cached:      s.Cached,
-		Output:      s.Output,
-		Reasoning:   s.Reasoning,
-		Total:       s.Total,
-		Measurement: model.MeasurementMeasured,
-		Confidence:  model.ConfidenceMeasured,
+	return model.MeasuredUsage(s.Input, s.Cached, s.Output, s.Reasoning, s.Total)
+}
+
+func (s UsageSnapshot) ToModelUsageWithEvidence(recordID string) model.Usage {
+	usage := s.ToModelUsage()
+	if recordID == "" || !s.hasAuthoritativeUsage() {
+		return usage
+	}
+	attachSourceValue(&usage, recordID)
+	return usage
+}
+
+func (s UsageSnapshot) toModelUsage(kind model.MeasurementKind) model.Usage {
+	if !s.hasAuthoritativeUsage() {
+		return model.Usage{}
+	}
+	if kind == model.MeasurementDerived {
+		return model.DerivedUsage(s.Input, s.Cached, s.Output, s.Reasoning, s.Total)
+	}
+	return model.MeasuredUsage(s.Input, s.Cached, s.Output, s.Reasoning, s.Total)
+}
+
+func attachSourceValue(u *model.Usage, recordID string) {
+	attachField := func(m *model.Measurement, field string) {
+		if !m.Available() {
+			return
+		}
+		m.Evidence = append(m.Evidence, sourceValueEvidence(recordID, field))
+	}
+	attachField(&u.Input, "total_token_usage.input_tokens")
+	attachField(&u.Cached, "total_token_usage.cached_input_tokens")
+	attachField(&u.Output, "total_token_usage.output_tokens")
+	attachField(&u.Reasoning, "total_token_usage.reasoning_output_tokens")
+	attachField(&u.Total, "total_token_usage.total_tokens")
+}
+
+func attachCumulativeDelta(u *model.Usage, prev, curr string) {
+	attachField := func(m *model.Measurement, field string) {
+		if !m.Available() {
+			return
+		}
+		m.Evidence = append(m.Evidence, cumulativeDeltaEvidence(prev, curr, field))
+	}
+	attachField(&u.Input, "input_tokens")
+	attachField(&u.Cached, "cached_input_tokens")
+	attachField(&u.Output, "output_tokens")
+	attachField(&u.Reasoning, "reasoning_output_tokens")
+	attachField(&u.Total, "total_tokens")
+}
+
+func sourceValueEvidence(recordID, field string) model.Evidence {
+	return model.Evidence{
+		Kind:   model.EvidenceSourceValue,
+		Source: "codex_rollout",
+		Record: recordID,
+		Field:  field,
 	}
 }
 
-func (s UsageSnapshot) toModelUsage(measurement model.MeasurementKind, confidence model.Confidence) model.Usage {
-	usage := s.ToModelUsage()
-	usage.Measurement = measurement
-	usage.Confidence = confidence
-	return usage
+func cumulativeDeltaEvidence(prev, curr, field string) model.Evidence {
+	return model.Evidence{
+		Kind:     model.EvidenceCumulativeDelta,
+		Source:   "codex_rollout",
+		Field:    field,
+		Previous: prev,
+		Current:  curr,
+	}
 }
 
 func SumSnapshots(snaps []UsageSnapshot) model.Usage {
@@ -63,15 +114,7 @@ func SumSnapshots(snaps []UsageSnapshot) model.Usage {
 	if !hasUsage {
 		return model.Usage{}
 	}
-	return model.Usage{
-		Input:       totalInput,
-		Cached:      totalCached,
-		Output:      totalOutput,
-		Reasoning:   totalReasoning,
-		Total:       totalTotal,
-		Measurement: model.MeasurementMeasured,
-		Confidence:  model.ConfidenceMeasured,
-	}
+	return model.DerivedUsage(totalInput, totalCached, totalOutput, totalReasoning, totalTotal)
 }
 
 func (s UsageSnapshot) hasAuthoritativeUsage() bool {

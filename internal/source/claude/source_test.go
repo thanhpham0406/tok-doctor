@@ -74,12 +74,12 @@ func TestSourceUsageAggregatesAcrossFixtures(t *testing.T) {
 	wantInput := int64(1470)
 	wantOutput := int64(375)
 	wantCached := int64(3400)
-	if usage.Input != wantInput || usage.Output != wantOutput || usage.Cached != wantCached {
+	if usage.Input.ValueOrZero() != wantInput || usage.Output.ValueOrZero() != wantOutput || usage.Cached.ValueOrZero() != wantCached {
 		t.Fatalf("usage = %+v, want input=%d output=%d cached=%d",
 			usage, wantInput, wantOutput, wantCached)
 	}
-	if usage.Confidence != model.ConfidenceMeasured {
-		t.Fatalf("confidence = %q, want measured", usage.Confidence)
+	if usage.Total.Kind != model.MeasurementDerived {
+		t.Fatalf("total kind = %q, want derived aggregate", usage.Total.Kind)
 	}
 }
 
@@ -96,11 +96,11 @@ func TestSourceUsageNoDataIsZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("usage: %v", err)
 	}
-	if usage.Confidence != "" {
-		t.Fatalf("confidence = %q, want empty", usage.Confidence)
+	if usage.HasUsage() {
+		t.Fatalf("usage = %+v, want unavailable", usage)
 	}
-	if usage.Total != 0 {
-		t.Fatalf("total = %d, want 0", usage.Total)
+	if usage.Total.ValueOrZero() != 0 {
+		t.Fatalf("total = %d, want 0", usage.Total.ValueOrZero())
 	}
 }
 
@@ -118,11 +118,14 @@ func TestReadSessionsUsesFileIdentityAndNoReasoning(t *testing.T) {
 	if session.ID != "basic-session" {
 		t.Fatalf("ID = %q, want stable file id", session.ID)
 	}
-	if session.Usage.Total != 920 {
-		t.Fatalf("total = %d, want 920", session.Usage.Total)
+	if session.Usage.Total.ValueOrZero() != 920 {
+		t.Fatalf("total = %d, want 920", session.Usage.Total.ValueOrZero())
 	}
-	if session.Usage.Reasoning != nil {
-		t.Fatalf("reasoning = %v, want unavailable", *session.Usage.Reasoning)
+	if session.Usage.Total.Kind != model.MeasurementDerived {
+		t.Fatalf("session total kind = %q, want derived", session.Usage.Total.Kind)
+	}
+	if session.Usage.Reasoning.Value != nil {
+		t.Fatalf("reasoning = %v, want unavailable", session.Usage.Reasoning.ValueOrZero())
 	}
 }
 
@@ -146,16 +149,16 @@ func TestReadSessionsAggregateReconcilesWithUsage(t *testing.T) {
 	var snaps []UsageSnapshot
 	for _, session := range sessions {
 		snaps = append(snaps, UsageSnapshot{
-			Input:    session.Usage.Input,
-			Cached:   session.Usage.Cached,
-			Output:   session.Usage.Output,
-			Total:    session.Usage.Total,
-			HasUsage: session.Usage.Confidence != "",
+			Input:    session.Usage.Input.ValueOrZero(),
+			Cached:   session.Usage.Cached.ValueOrZero(),
+			Output:   session.Usage.Output.ValueOrZero(),
+			Total:    session.Usage.Total.ValueOrZero(),
+			HasUsage: session.Usage.HasUsage(),
 		})
 	}
 	reconciled := SumSnapshots(snaps)
-	if reconciled.Input != usage.Input || reconciled.Cached != usage.Cached ||
-		reconciled.Output != usage.Output || reconciled.Total != usage.Total {
+	if reconciled.Input.ValueOrZero() != usage.Input.ValueOrZero() || reconciled.Cached.ValueOrZero() != usage.Cached.ValueOrZero() ||
+		reconciled.Output.ValueOrZero() != usage.Output.ValueOrZero() || reconciled.Total.ValueOrZero() != usage.Total.ValueOrZero() {
 		t.Fatalf("session aggregate = %+v, usage = %+v", reconciled, usage)
 	}
 }
@@ -185,8 +188,8 @@ func TestReadSessionsKeepsUsageWithoutModel(t *testing.T) {
 	if sessions[0].Model != "" {
 		t.Fatalf("model = %q, want unavailable", sessions[0].Model)
 	}
-	if sessions[0].Usage.Total != 60 {
-		t.Fatalf("total = %d, want 60", sessions[0].Usage.Total)
+	if sessions[0].Usage.Total.ValueOrZero() != 60 {
+		t.Fatalf("total = %d, want 60", sessions[0].Usage.Total.ValueOrZero())
 	}
 }
 
@@ -253,8 +256,8 @@ func TestReadSessionsKeepsCachedOnly(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("sessions = %d, want 1", len(sessions))
 	}
-	if sessions[0].Usage.Cached != 100 {
-		t.Fatalf("cached = %d, want 100", sessions[0].Usage.Cached)
+	if sessions[0].Usage.Cached.ValueOrZero() != 100 {
+		t.Fatalf("cached = %d, want 100", sessions[0].Usage.Cached.ValueOrZero())
 	}
 }
 
@@ -268,8 +271,8 @@ func TestReadSessionsKeepsOutputOnly(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("sessions = %d, want 1", len(sessions))
 	}
-	if sessions[0].Usage.Output != 10 {
-		t.Fatalf("output = %d, want 10", sessions[0].Usage.Output)
+	if sessions[0].Usage.Output.ValueOrZero() != 10 {
+		t.Fatalf("output = %d, want 10", sessions[0].Usage.Output.ValueOrZero())
 	}
 }
 
@@ -283,8 +286,8 @@ func TestReadSessionsKeepsInputOnly(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("sessions = %d, want 1", len(sessions))
 	}
-	if sessions[0].Usage.Input != 1 {
-		t.Fatalf("input = %d, want 1", sessions[0].Usage.Input)
+	if sessions[0].Usage.Input.ValueOrZero() != 1 {
+		t.Fatalf("input = %d, want 1", sessions[0].Usage.Input.ValueOrZero())
 	}
 }
 
@@ -300,7 +303,7 @@ func TestUsageAggregateSkipsAllZeroSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Usage: %v", err)
 	}
-	if usage.Input != 720 || usage.Output != 200 {
+	if usage.Input.ValueOrZero() != 720 || usage.Output.ValueOrZero() != 200 {
 		t.Fatalf("usage = %+v, want basic-session totals only (all-zero skipped)", usage)
 	}
 }
@@ -321,15 +324,13 @@ func TestReadSessionsAndUsageAgree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSessions: %v", err)
 	}
-	filterUsage := model.Usage{}
+	var filterUsages []model.Usage
 	for _, sess := range sessions {
-		filterUsage.Input += sess.Usage.Input
-		filterUsage.Cached += sess.Usage.Cached
-		filterUsage.Output += sess.Usage.Output
-		filterUsage.Total += sess.Usage.Total
+		filterUsages = append(filterUsages, sess.Usage)
 	}
-	if filterUsage.Input != usage.Input || filterUsage.Cached != usage.Cached ||
-		filterUsage.Output != usage.Output || filterUsage.Total != usage.Total {
+	filterUsage := model.SumUsage(filterUsages)
+	if filterUsage.Input.ValueOrZero() != usage.Input.ValueOrZero() || filterUsage.Cached.ValueOrZero() != usage.Cached.ValueOrZero() ||
+		filterUsage.Output.ValueOrZero() != usage.Output.ValueOrZero() || filterUsage.Total.ValueOrZero() != usage.Total.ValueOrZero() {
 		t.Fatalf("usage aggregate = %+v, session aggregate = %+v", usage, filterUsage)
 	}
 }
@@ -384,11 +385,14 @@ func TestReadSessionsTurnsKeepPerCallUsage(t *testing.T) {
 		t.Fatalf("turns = %d, want 2", len(sessions[0].Turns))
 	}
 	first := sessions[0].Turns[0]
-	if first.Usage.Input != 420 || first.Usage.Output != 80 {
+	if first.Usage.Input.ValueOrZero() != 420 || first.Usage.Output.ValueOrZero() != 80 {
 		t.Fatalf("first turn usage = %+v, want 420/80 (per-call usage, not session aggregate)", first.Usage)
 	}
+	if first.Usage.Input.Kind != model.MeasurementMeasured {
+		t.Fatalf("first turn input kind = %q, want measured", first.Usage.Input.Kind)
+	}
 	second := sessions[0].Turns[1]
-	if second.Usage.Input != 300 || second.Usage.Output != 120 {
+	if second.Usage.Input.ValueOrZero() != 300 || second.Usage.Output.ValueOrZero() != 120 {
 		t.Fatalf("second turn usage = %+v, want 300/120", second.Usage)
 	}
 }
@@ -414,8 +418,8 @@ func TestReadSessionsTurnReasoningIsUnavailable(t *testing.T) {
 	}
 	for _, sess := range sessions {
 		for _, turn := range sess.Turns {
-			if turn.Usage.Reasoning != nil {
-				t.Fatalf("turn %s reasoning = %v, want nil (Claude session format does not expose reasoning)", turn.ID, *turn.Usage.Reasoning)
+			if turn.Usage.Reasoning.Value != nil {
+				t.Fatalf("turn %s reasoning = %v, want unavailable (Claude session format does not expose reasoning)", turn.ID, turn.Usage.Reasoning.ValueOrZero())
 			}
 		}
 	}
@@ -437,5 +441,153 @@ func TestReadSessionsTurnSequenceIsStable(t *testing.T) {
 				t.Fatalf("turn missing id at index %d", i)
 			}
 		}
+	}
+}
+
+func TestReadSessionsTurnsCarrySourceValueEvidence(t *testing.T) {
+	withFixtureHome(t, "duplicate-message-id-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(sessions))
+	}
+	if len(sessions[0].Turns) != 2 {
+		t.Fatalf("turns = %d, want 2 (duplicates dedupe, two distinct messages)", len(sessions[0].Turns))
+	}
+	for _, turn := range sessions[0].Turns {
+		if turn.Usage.Input.Kind != model.MeasurementMeasured {
+			t.Fatalf("turn %s input kind = %q, want measured", turn.ID, turn.Usage.Input.Kind)
+		}
+		for _, metric := range []model.Measurement{turn.Usage.Input, turn.Usage.Output, turn.Usage.Total} {
+			if len(metric.Evidence) == 0 {
+				t.Fatalf("turn %s metric missing evidence", turn.ID)
+			}
+			ev := metric.Evidence[0]
+			if ev.Kind != model.EvidenceSourceValue {
+				t.Fatalf("turn %s evidence kind = %q, want source_value", turn.ID, ev.Kind)
+			}
+			if ev.Source != "claude_session" {
+				t.Fatalf("turn %s evidence source = %q, want claude_session", turn.ID, ev.Source)
+			}
+			if ev.Record != turn.ID {
+				t.Fatalf("turn %s evidence record = %q, want message id %q", turn.ID, ev.Record, turn.ID)
+			}
+			if !ev.ConsistentWithKind(metric.Kind) {
+				t.Fatalf("turn %s evidence inconsistent with measurement kind %q", turn.ID, metric.Kind)
+			}
+		}
+	}
+}
+
+func TestReadSessionsDedupeRegressionEvidenceLineage(t *testing.T) {
+	withFixtureHome(t, "duplicate-message-id-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	seen := map[string]int{}
+	for _, turn := range sessions[0].Turns {
+		for _, metric := range []model.Measurement{turn.Usage.Input, turn.Usage.Output, turn.Usage.Total} {
+			for _, ev := range metric.Evidence {
+				if ev.Kind == model.EvidenceSourceValue {
+					seen[ev.Record]++
+				}
+			}
+		}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("distinct records = %d, want 2 (one per unique message id)", len(seen))
+	}
+	for id, count := range seen {
+		if count != 3 {
+			t.Fatalf("record %s appeared on %d metrics, want 3 (one per metric)", id, count)
+		}
+	}
+}
+
+func TestReadSessionsSessionEvidenceIsAggregate(t *testing.T) {
+	withFixtureHome(t, "basic-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(sessions))
+	}
+	if len(sessions[0].Evidence) != 1 {
+		t.Fatalf("session evidence = %d, want 1", len(sessions[0].Evidence))
+	}
+	ev := sessions[0].Evidence[0]
+	if ev.Kind != model.EvidenceAggregate {
+		t.Fatalf("session evidence kind = %q, want aggregate", ev.Kind)
+	}
+	if ev.Source != "turns" {
+		t.Fatalf("session evidence source = %q, want turns", ev.Source)
+	}
+	if ev.Operation != model.AggregateSum {
+		t.Fatalf("session evidence operation = %q, want sum", ev.Operation)
+	}
+	if ev.Count != 2 {
+		t.Fatalf("session evidence count = %d, want 2", ev.Count)
+	}
+}
+
+func TestReadSessionsSessionUsageMetricsCarryAggregateEvidence(t *testing.T) {
+	withFixtureHome(t, "basic-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	session := sessions[0]
+	if session.Usage.Input.Kind != model.MeasurementDerived {
+		t.Fatalf("session input kind = %q, want derived", session.Usage.Input.Kind)
+	}
+	found := false
+	for _, ev := range session.Usage.Input.Evidence {
+		if ev.Kind == model.EvidenceAggregate {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("session input missing aggregate evidence: %+v", session.Usage.Input.Evidence)
+	}
+}
+
+func TestReadSessionsUnavailableMetricHasNoEvidence(t *testing.T) {
+	withFixtureHome(t, "cached-only-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 1 || len(sessions[0].Turns) != 1 {
+		t.Fatalf("expected one session with one turn, got %d turns", len(sessions[0].Turns))
+	}
+	turn := sessions[0].Turns[0]
+	if !turn.Usage.Cached.HasEvidence() {
+		t.Fatalf("cached turn metric should carry evidence: %+v", turn.Usage.Cached.Evidence)
+	}
+	for _, metric := range []model.Measurement{turn.Usage.Cached, turn.Usage.Total} {
+		if !metric.HasEvidence() {
+			t.Fatalf("metric %+v should have evidence", metric)
+		}
+	}
+}
+
+func TestReadSessionsExplicitZeroRetainsEvidence(t *testing.T) {
+	withFixtureHome(t, "explicit-zero-usage-session.jsonl")
+
+	sessions, err := New().ReadSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReadSessions: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Skip("explicit-zero sessions are filtered out at the source level by HasPositiveUsage; explicit zero retention is exercised for Codex where the snapshot is preserved")
 	}
 }

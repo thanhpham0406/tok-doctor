@@ -299,8 +299,8 @@ func TestSessionsJSONCommandKeepsNumbersNumeric(t *testing.T) {
 		t.Fatalf("sessions = %d, want 2", len(result.Sessions))
 	}
 	for _, session := range result.Sessions {
-		if session.ID == "sess-2" && session.Usage.Total != 4450 {
-			t.Fatalf("total = %d, want numeric 4450", session.Usage.Total)
+		if session.ID == "sess-2" && session.Usage.Total.ValueOrZero() != 4450 {
+			t.Fatalf("total = %d, want numeric 4450", session.Usage.Total.ValueOrZero())
 		}
 	}
 	if strings.Contains(stdout.String(), `"total": "`) {
@@ -577,13 +577,66 @@ func TestInspectCommandJSONOutput(t *testing.T) {
 	if decoded.Session.Source != "codex" {
 		t.Fatalf("session.source = %q, want codex", decoded.Session.Source)
 	}
-	if decoded.Session.Usage.Total != 4450 {
-		t.Fatalf("usage.total = %d, want 4450", decoded.Session.Usage.Total)
+	if decoded.Session.Usage.Total.ValueOrZero() != 4450 {
+		t.Fatalf("usage.total = %d, want 4450", decoded.Session.Usage.Total.ValueOrZero())
 	}
 	if len(decoded.Session.Turns) != 3 {
 		t.Fatalf("turns = %d, want 3", len(decoded.Session.Turns))
 	}
 	if strings.Contains(stdout.String(), `"total": "`) {
 		t.Fatalf("json output has string total: %s", stdout.String())
+	}
+}
+
+func TestInspectCommandEvidenceFlagShowsProvenance(t *testing.T) {
+	withCLIFixtureHome(t)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"inspect", "sess-2", "--turn", "2", "--evidence"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute inspect: %v", err)
+	}
+	got := stdout.String()
+	for _, want := range []string{"Evidence", "cumulative delta", "codex_rollout", "snap:1", "snap:2", "input_tokens"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestInspectCommandWithoutEvidenceFlagHidesProvenance(t *testing.T) {
+	withCLIFixtureHome(t)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"inspect", "sess-2", "--turn", "1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute inspect: %v", err)
+	}
+	if strings.Contains(stdout.String(), "Evidence") {
+		t.Fatalf("evidence section should be hidden without --evidence, got %q", stdout.String())
+	}
+}
+
+func TestInspectCommandJSONIncludesEvidenceMetadata(t *testing.T) {
+	withCLIFixtureHome(t)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"inspect", "sess-2", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute inspect json: %v", err)
+	}
+	for _, want := range []string{`"kind": "cumulative_delta"`, `"source": "codex_rollout"`, `"field": "input_tokens"`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("json output missing %q: %s", want, stdout.String())
+		}
+	}
+	if strings.Contains(stdout.String(), `"total": "`) {
+		t.Fatalf("json output must keep numeric totals: %s", stdout.String())
 	}
 }
