@@ -57,6 +57,7 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer, logger *slog.
 	cmd.AddCommand(newPricingCommand(stdout, tok))
 	cmd.AddCommand(newSourcesCommand(ctx, stdout, tok))
 	cmd.AddCommand(newSourceCommand(ctx, stdout, tok))
+	cmd.AddCommand(newGatewayCommand(ctx, stdout, tok))
 
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)

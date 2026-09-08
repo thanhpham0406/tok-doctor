@@ -3,13 +3,14 @@ package model
 type ContextComponentKind string
 
 const (
-	ContextInstructions ContextComponentKind = "instructions"
-	ContextUserPrompt   ContextComponentKind = "user_prompt"
-	ContextHistory      ContextComponentKind = "history"
-	ContextFile         ContextComponentKind = "file"
-	ContextToolResult   ContextComponentKind = "tool_result"
-	ContextOther        ContextComponentKind = "other"
-	ContextUnknown      ContextComponentKind = "unknown"
+	ContextInstructions   ContextComponentKind = "instructions"
+	ContextUserPrompt     ContextComponentKind = "user_prompt"
+	ContextHistory        ContextComponentKind = "history"
+	ContextFile           ContextComponentKind = "file"
+	ContextToolResult     ContextComponentKind = "tool_result"
+	ContextToolDefinition ContextComponentKind = "tool_definition"
+	ContextOther          ContextComponentKind = "other"
+	ContextUnknown        ContextComponentKind = "unknown"
 )
 
 type ContextObservationScope string
@@ -28,6 +29,7 @@ type ContextAttribution struct {
 
 type ContextComponent struct {
 	Kind        ContextComponentKind    `json:"kind"`
+	Position    int                     `json:"position,omitempty"`
 	Source      string                  `json:"source,omitempty"`
 	Record      string                  `json:"record,omitempty"`
 	Path        string                  `json:"path,omitempty"`

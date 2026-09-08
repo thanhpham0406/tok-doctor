@@ -12,6 +12,20 @@ import (
 type Config struct {
 	Sources map[string]Source `json:"sources,omitempty"`
 	Pricing Pricing           `json:"pricing,omitempty"`
+	Gateway Gateway           `json:"gateway,omitempty"`
+}
+
+type Gateway struct {
+	Profiles map[string]GatewayProfile `json:"profiles,omitempty"`
+}
+
+type GatewayProfile struct {
+	Enabled     bool   `json:"enabled,omitempty"`
+	Listen      string `json:"listen,omitempty"`
+	Protocol    string `json:"protocol,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Upstream    string `json:"upstream,omitempty"`
+	ProviderTag string `json:"provider,omitempty"`
 }
 
 type Source struct {
@@ -48,7 +62,7 @@ func (s Store) Path() string {
 }
 
 func (s Store) Load() (Config, error) {
-	cfg := Config{Sources: map[string]Source{}}
+	cfg := Config{Sources: map[string]Source{}, Gateway: Gateway{Profiles: map[string]GatewayProfile{}}}
 	if s.path == "" {
 		return cfg, nil
 	}
@@ -62,7 +76,8 @@ func (s Store) Load() (Config, error) {
 	}
 	defer file.Close()
 
-	current := ""
+	currentKind := ""
+	currentName := ""
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -71,14 +86,23 @@ func (s Store) Load() (Config, error) {
 		}
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			section := strings.TrimSuffix(strings.TrimPrefix(line, "["), "]")
-			if section == "pricing" {
-				current = "pricing"
-			} else {
-				current = sectionSource(section)
+			switch {
+			case section == "pricing":
+				currentKind = "pricing"
+				currentName = section
+			case strings.HasPrefix(section, "sources."):
+				currentKind = "source"
+				currentName = strings.TrimPrefix(section, "sources.")
+			case strings.HasPrefix(section, "gateway.profiles."):
+				currentKind = "gateway_profile"
+				currentName = strings.TrimPrefix(section, "gateway.profiles.")
+			default:
+				currentKind = ""
+				currentName = ""
 			}
 			continue
 		}
-		if current == "" {
+		if currentKind == "" {
 			continue
 		}
 
@@ -92,23 +116,42 @@ func (s Store) Load() (Config, error) {
 			return Config{}, fmt.Errorf("parse config %s: %w", s.path, err)
 		}
 
-		if current == "pricing" {
+		switch currentKind {
+		case "pricing":
 			if key == "override_path" {
 				cfg.Pricing.OverridePath = parsed
 			}
-			continue
+		case "source":
+			src := cfg.Sources[currentName]
+			switch key {
+			case "path":
+				src.Path = parsed
+			case "endpoint":
+				src.Endpoint = parsed
+			default:
+				continue
+			}
+			cfg.Sources[currentName] = src
+		case "gateway_profile":
+			profile := cfg.Gateway.Profiles[currentName]
+			switch key {
+			case "enabled":
+				profile.Enabled = parsed == "true"
+			case "listen":
+				profile.Listen = parsed
+			case "protocol":
+				profile.Protocol = parsed
+			case "source":
+				profile.Source = parsed
+			case "upstream":
+				profile.Upstream = parsed
+			case "provider":
+				profile.ProviderTag = parsed
+			default:
+				continue
+			}
+			cfg.Gateway.Profiles[currentName] = profile
 		}
-
-		src := cfg.Sources[current]
-		switch key {
-		case "path":
-			src.Path = parsed
-		case "endpoint":
-			src.Endpoint = parsed
-		default:
-			continue
-		}
-		cfg.Sources[current] = src
 	}
 	if err := scanner.Err(); err != nil {
 		return Config{}, fmt.Errorf("read config %s: %w", s.path, err)
@@ -197,13 +240,6 @@ func (s Store) ResetSource(name string) error {
 	}
 	delete(cfg.Sources, name)
 	return s.Save(cfg)
-}
-
-func sectionSource(section string) string {
-	if !strings.HasPrefix(section, "sources.") {
-		return ""
-	}
-	return strings.TrimPrefix(section, "sources.")
 }
 
 func parseString(raw string) (string, error) {

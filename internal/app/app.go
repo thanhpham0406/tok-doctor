@@ -11,6 +11,7 @@ import (
 
 	"github.com/thanhpham0406/tok-doctor/internal/analyze"
 	"github.com/thanhpham0406/tok-doctor/internal/config"
+	"github.com/thanhpham0406/tok-doctor/internal/gateway"
 	"github.com/thanhpham0406/tok-doctor/internal/model"
 	"github.com/thanhpham0406/tok-doctor/internal/pricing"
 	"github.com/thanhpham0406/tok-doctor/internal/source"
@@ -411,4 +412,52 @@ func (a *App) validateCLIOverride(name string, override source.Override) error {
 
 func normalizeName(name string) string {
 	return strings.ToLower(name)
+}
+
+func (a *App) GatewayStart(ctx context.Context, profileName string) (*gateway.Runtime, gateway.ProfileSet, error) {
+	cfg, err := a.config.Load()
+	if err != nil {
+		return nil, gateway.ProfileSet{}, err
+	}
+	set := gateway.ValidateProfiles(cfg.Gateway.Profiles).FilterByName(profileName)
+	if len(set.Errors) > 0 {
+		errs := make([]string, 0, len(set.Errors))
+		for _, e := range set.Errors {
+			errs = append(errs, fmt.Sprintf("%s: %s", e.Name, e.Reason))
+		}
+		return nil, set, errors.New(strings.Join(errs, "; "))
+	}
+	dir, err := gateway.DefaultDir()
+	if err != nil {
+		return nil, set, err
+	}
+	recorder, err := gateway.NewFileRecorder(dir)
+	if err != nil {
+		return nil, set, err
+	}
+	rt := gateway.NewRuntime(recorder)
+	if err := rt.Start(ctx, set.Profiles); err != nil {
+		_ = recorder.Close()
+		return nil, set, err
+	}
+	return rt, set, nil
+}
+
+func (a *App) GatewayStatus(profileName string) ([]gateway.StatusEntry, error) {
+	cfg, err := a.config.Load()
+	if err != nil {
+		return nil, err
+	}
+	set := gateway.ValidateProfiles(cfg.Gateway.Profiles).FilterByName(profileName)
+	dir, err := gateway.DefaultDir()
+	if err != nil {
+		return nil, err
+	}
+	recorder, err := gateway.NewFileRecorder(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer recorder.Close()
+	rt := gateway.NewRuntime(recorder)
+	return rt.Status(set.Profiles), nil
 }
