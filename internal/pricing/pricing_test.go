@@ -3,7 +3,6 @@ package pricing
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -79,22 +78,25 @@ func TestEmbeddedCatalogTieredProfileAliasesResolveExactly(t *testing.T) {
 }
 
 func TestPublicCatalogMatchesEmbeddedFallback(t *testing.T) {
-	publicFile, err := os.Open(filepath.Join("..", "..", "pricing", "catalog.json"))
+	publicData, err := os.ReadFile(filepath.Join("..", "..", "pricing", "catalog.json"))
 	if err != nil {
-		t.Fatalf("open public catalog: %v", err)
+		t.Fatalf("read public catalog: %v", err)
 	}
-	defer publicFile.Close()
+	embeddedData, err := catalogFS.ReadFile("embedded_catalog.json")
+	if err != nil {
+		t.Fatalf("read embedded catalog: %v", err)
+	}
+	if string(publicData) != string(embeddedData) {
+		t.Fatalf("embedded_catalog.json differs from public pricing/catalog.json; run make pricing-sync")
+	}
+}
 
-	publicCatalog, err := DecodeCatalog(publicFile)
-	if err != nil {
-		t.Fatalf("decode public catalog: %v", err)
+func TestEmbeddedCatalogLoadsFromEmbeddedCatalogJSON(t *testing.T) {
+	if _, err := catalogFS.ReadFile("embedded_catalog.json"); err != nil {
+		t.Fatalf("read embedded_catalog.json: %v", err)
 	}
-	embedded, err := EmbeddedCatalog()
-	if err != nil {
-		t.Fatalf("EmbeddedCatalog: %v", err)
-	}
-	if !reflect.DeepEqual(publicCatalog, embedded) {
-		t.Fatalf("embedded fallback differs from public pricing/catalog.json")
+	if _, err := catalogFS.ReadFile("catalog.json"); err == nil {
+		t.Fatal("unexpected embedded catalog.json; embedded fallback should use embedded_catalog.json")
 	}
 }
 

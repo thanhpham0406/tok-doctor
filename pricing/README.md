@@ -13,5 +13,6 @@ To add or update a profile:
 1. Verify the pricing from an authoritative provider source.
 2. Add or update one profile in `pricing/catalog.json`.
 3. Include the source URL and verification date.
-4. Mirror the file to `internal/pricing/catalog.json` so the embedded offline fallback stays current.
-5. Run the pricing tests.
+4. Run `make pricing-sync` so `internal/pricing/embedded_catalog.json` stays in sync as the generated embedded fallback.
+5. Commit both `pricing/catalog.json` and `internal/pricing/embedded_catalog.json`.
+6. Run the pricing tests.

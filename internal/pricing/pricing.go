@@ -18,7 +18,7 @@ import (
 	"github.com/thanhpham0406/tok-doctor/internal/model"
 )
 
-//go:embed catalog.json
+//go:embed embedded_catalog.json
 var catalogFS embed.FS
 
 const (
@@ -276,7 +276,7 @@ func DecodeCatalog(r io.Reader) (Catalog, error) {
 }
 
 func EmbeddedCatalog() (Catalog, error) {
-	f, err := catalogFS.Open("catalog.json")
+	f, err := catalogFS.Open("embedded_catalog.json")
 	if err != nil {
 		return Catalog{}, fmt.Errorf("open embedded pricing catalog: %w", err)
 	}

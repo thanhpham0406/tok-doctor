@@ -1,7 +1,7 @@
 GO ?= go
 NPM ?= npm
 
-.PHONY: build test vet lint vulncheck ui-build check clean
+.PHONY: build test vet lint vulncheck ui-build pricing-sync check clean
 
 build:
 	$(GO) build -o bin/tok ./cmd/tok
@@ -21,6 +21,9 @@ vulncheck:
 ui-build:
 	$(NPM) --prefix ui install
 	$(NPM) --prefix ui run build
+
+pricing-sync:
+	cp pricing/catalog.json internal/pricing/embedded_catalog.json
 
 check: test vet lint
 
