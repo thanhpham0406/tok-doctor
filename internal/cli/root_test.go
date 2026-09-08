@@ -260,6 +260,9 @@ func TestSessionsCommand(t *testing.T) {
 			t.Fatalf("sessions output = %q, did not want %q", got, unwanted)
 		}
 	}
+	if strings.Contains(got, "sess-empty") {
+		t.Fatalf("sessions output = %q, did not want Codex no-usage session", got)
+	}
 }
 
 func TestSessionsCommandUnsupportedRouter9(t *testing.T) {
@@ -380,6 +383,43 @@ func TestClaudeSessionsTerminalAndJsonAgreeOnIds(t *testing.T) {
 	}
 }
 
+func TestCodexSessionsTerminalAndJsonAgreeOnIds(t *testing.T) {
+	withCLIFixtureHome(t)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var terminalOut bytes.Buffer
+	cmd := newRootCommand(context.Background(), &terminalOut, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"sessions", "--source", "codex"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("terminal sessions: %v", err)
+	}
+
+	var jsonOut bytes.Buffer
+	cmd = newRootCommand(context.Background(), &jsonOut, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"sessions", "--source", "codex", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("json sessions: %v", err)
+	}
+
+	var result model.SessionsResult
+	if err := json.Unmarshal(jsonOut.Bytes(), &result); err != nil {
+		t.Fatalf("decode json: %v\n%s", err, jsonOut.String())
+	}
+	if len(result.Sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2 Codex sessions with usage", len(result.Sessions))
+	}
+	for _, session := range result.Sessions {
+		if !strings.Contains(terminalOut.String(), session.ID[:min(12, len(session.ID))]) {
+			t.Fatalf("session %q present in json but missing from terminal output", session.ID)
+		}
+	}
+	for _, out := range []string{terminalOut.String(), jsonOut.String()} {
+		if strings.Contains(out, "sess-empty") || strings.Contains(out, "no-usage") {
+			t.Fatalf("output = %q, did not want Codex no-usage session", out)
+		}
+	}
+}
+
 func withCLIFixtureHome(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()
@@ -400,6 +440,8 @@ func withCLIFixtureHome(t *testing.T) {
 		filepath.Join(home, ".codex", "sessions", "basic-session.jsonl"))
 	copyFixture(filepath.Join("..", "..", "fixtures", "codex", "multi-snapshot-session.jsonl"),
 		filepath.Join(home, ".codex", "sessions", "multi-snapshot-session.jsonl"))
+	copyFixture(filepath.Join("..", "..", "fixtures", "codex", "no-usage-session.jsonl"),
+		filepath.Join(home, ".codex", "sessions", "no-usage-session.jsonl"))
 	copyFixture(filepath.Join("..", "..", "fixtures", "claude", "basic-session.jsonl"),
 		filepath.Join(home, ".claude", "projects", "basic-session.jsonl"))
 	copyFixture(filepath.Join("..", "..", "fixtures", "claude", "empty-artifact-session.jsonl"),

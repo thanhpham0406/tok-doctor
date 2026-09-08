@@ -18,6 +18,9 @@ func TestParseSessionUsageBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
+	if !snap.HasUsage {
+		t.Fatal("HasUsage = false, want true")
+	}
 	if snap.Input != 1200 || snap.Cached != 300 || snap.Output != 450 || snap.Total != 1950 {
 		t.Fatalf("snapshot = %+v, want input=1200 cached=300 output=450 total=1950", snap)
 	}
@@ -89,8 +92,31 @@ func TestParseSessionUsageNoUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
+	if snap.HasUsage {
+		t.Fatal("HasUsage = true, want false")
+	}
 	if snap.Total != 0 || snap.Input != 0 {
 		t.Fatalf("snapshot = %+v, want zero", snap)
+	}
+}
+
+func TestParseSessionUsageExplicitZero(t *testing.T) {
+	snap, err := ParseSessionUsage(fixturePath(t, "explicit-zero-usage-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !snap.HasUsage {
+		t.Fatal("HasUsage = false, want true for explicit token_count")
+	}
+	u := snap.ToModelUsage()
+	if !u.HasAuthoritativeUsage() {
+		t.Fatal("model usage should be authoritative for explicit zero token_count")
+	}
+	if u.Input != 0 || u.Cached != 0 || u.Output != 0 || u.Total != 0 {
+		t.Fatalf("usage = %+v, want explicit zero values", u)
+	}
+	if u.Reasoning == nil || *u.Reasoning != 0 {
+		t.Fatalf("reasoning = %v, want pointer to explicit zero", u.Reasoning)
 	}
 }
 
@@ -143,6 +169,17 @@ func TestUsageSnapshotZeroHasEmptyConfidence(t *testing.T) {
 	u := UsageSnapshot{}.ToModelUsage()
 	if u.Confidence != "" {
 		t.Fatalf("confidence = %q, want empty for zero snapshot", u.Confidence)
+	}
+}
+
+func TestUsageSnapshotExplicitZeroIsMeasured(t *testing.T) {
+	zero := int64(0)
+	u := UsageSnapshot{Reasoning: &zero, HasUsage: true}.ToModelUsage()
+	if u.Confidence != model.ConfidenceMeasured {
+		t.Fatalf("confidence = %q, want measured", u.Confidence)
+	}
+	if !u.HasAuthoritativeUsage() {
+		t.Fatal("explicit zero usage should be authoritative")
 	}
 }
 

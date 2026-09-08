@@ -156,6 +156,7 @@ func snapshotFromEvent(e tokenCountEvent) UsageSnapshot {
 		Output:    t.OutputTokens,
 		Reasoning: t.ReasoningOutputTokens,
 		Total:     t.TotalTokens,
+		HasUsage:  true,
 	}
 }
 

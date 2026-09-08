@@ -8,10 +8,11 @@ type UsageSnapshot struct {
 	Output    int64
 	Reasoning *int64
 	Total     int64
+	HasUsage  bool
 }
 
 func (s UsageSnapshot) ToModelUsage() model.Usage {
-	if s.Input == 0 && s.Cached == 0 && s.Output == 0 && s.Total == 0 && s.Reasoning == nil {
+	if !s.hasAuthoritativeUsage() {
 		return model.Usage{}
 	}
 	return model.Usage{
@@ -39,8 +40,13 @@ func SumSnapshots(snaps []UsageSnapshot) model.Usage {
 		totalOutput    int64
 		totalTotal     int64
 		totalReasoning *int64
+		hasUsage       bool
 	)
 	for _, s := range snaps {
+		if !s.hasAuthoritativeUsage() {
+			continue
+		}
+		hasUsage = true
 		totalInput += s.Input
 		totalCached += s.Cached
 		totalOutput += s.Output
@@ -54,7 +60,7 @@ func SumSnapshots(snaps []UsageSnapshot) model.Usage {
 			}
 		}
 	}
-	if totalInput == 0 && totalCached == 0 && totalOutput == 0 && totalTotal == 0 && totalReasoning == nil {
+	if !hasUsage {
 		return model.Usage{}
 	}
 	return model.Usage{
@@ -66,4 +72,8 @@ func SumSnapshots(snaps []UsageSnapshot) model.Usage {
 		Measurement: model.MeasurementMeasured,
 		Confidence:  model.ConfidenceMeasured,
 	}
+}
+
+func (s UsageSnapshot) hasAuthoritativeUsage() bool {
+	return s.HasUsage || s.Input != 0 || s.Cached != 0 || s.Output != 0 || s.Total != 0 || s.Reasoning != nil
 }

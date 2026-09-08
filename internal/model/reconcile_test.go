@@ -57,3 +57,22 @@ func TestReconcileUsageMissingReasoning(t *testing.T) {
 		t.Fatal("comparison matched when turn has no reasoning but session has 10")
 	}
 }
+
+func TestSessionHasAuthoritativeUsageDistinguishesMissingFromExplicitZero(t *testing.T) {
+	missing := Session{}
+	if missing.HasAuthoritativeUsage() {
+		t.Fatal("missing usage should not be authoritative")
+	}
+
+	explicitZero := Session{Usage: Usage{Measurement: MeasurementMeasured, Confidence: ConfidenceMeasured}}
+	if !explicitZero.HasAuthoritativeUsage() {
+		t.Fatal("explicit zero measured usage should be authoritative")
+	}
+}
+
+func TestSessionHasAuthoritativeUsageDoesNotRequireTotal(t *testing.T) {
+	session := Session{Usage: Usage{Input: 12, Measurement: MeasurementMeasured, Confidence: ConfidenceMeasured}}
+	if !session.HasAuthoritativeUsage() {
+		t.Fatal("measured component usage without total should be authoritative")
+	}
+}

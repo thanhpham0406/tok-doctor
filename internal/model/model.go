@@ -42,6 +42,10 @@ type Session struct {
 	Evidence    []Evidence   `json:"evidence,omitempty"`
 }
 
+func (s Session) HasAuthoritativeUsage() bool {
+	return s.Usage.HasAuthoritativeUsage()
+}
+
 type Turn struct {
 	ID          string          `json:"id"`
 	Sequence    int             `json:"sequence"`
@@ -82,6 +86,10 @@ type Usage struct {
 	Total       int64           `json:"total"`
 	Measurement MeasurementKind `json:"measurement,omitempty"`
 	Confidence  Confidence      `json:"confidence,omitempty"`
+}
+
+func (u Usage) HasAuthoritativeUsage() bool {
+	return u.Measurement == MeasurementMeasured || u.Confidence == ConfidenceMeasured
 }
 
 type UsageResult struct {

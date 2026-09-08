@@ -110,6 +110,7 @@ func (a *App) Sessions(ctx context.Context, name string) (model.SessionsResult, 
 	if err != nil {
 		return model.SessionsResult{}, fmt.Errorf("sessions for %s: %w", name, err)
 	}
+	sessions = sessionsWithAuthoritativeUsage(sessions)
 	return model.SessionsResult{Sessions: sessions}, nil
 }
 
@@ -126,8 +127,19 @@ func (a *App) SessionsAll(ctx context.Context) (model.SessionsResult, error) {
 		}
 		result.Sessions = append(result.Sessions, sessions...)
 	}
+	result.Sessions = sessionsWithAuthoritativeUsage(result.Sessions)
 	sortSessions(result.Sessions)
 	return result, nil
+}
+
+func sessionsWithAuthoritativeUsage(sessions []model.Session) []model.Session {
+	filtered := sessions[:0]
+	for _, session := range sessions {
+		if session.HasAuthoritativeUsage() {
+			filtered = append(filtered, session)
+		}
+	}
+	return filtered
 }
 
 var (

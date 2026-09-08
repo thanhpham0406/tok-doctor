@@ -154,6 +154,62 @@ func TestSessionsAllIncludesSessionCapableSources(t *testing.T) {
 	}
 }
 
+func TestSessionsFiltersArtifactsWithoutAuthoritativeUsage(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir codex: %v", err)
+	}
+	copyTestFixture(t, filepath.Join("..", "..", "fixtures", "codex", "basic-session.jsonl"),
+		filepath.Join(home, ".codex", "sessions", "basic.jsonl"))
+	copyTestFixture(t, filepath.Join("..", "..", "fixtures", "codex", "no-usage-session.jsonl"),
+		filepath.Join(home, ".codex", "sessions", "no-usage.jsonl"))
+	copyTestFixture(t, filepath.Join("..", "..", "fixtures", "codex", "explicit-zero-usage-session.jsonl"),
+		filepath.Join(home, ".codex", "sessions", "zero.jsonl"))
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	app := NewWithStore(config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml")))
+	result, err := app.Sessions(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("Sessions: %v", err)
+	}
+	if len(result.Sessions) != 2 {
+		t.Fatalf("sessions = %d, want authoritative usage sessions", len(result.Sessions))
+	}
+	gotIDs := map[string]bool{}
+	for _, session := range result.Sessions {
+		gotIDs[session.ID] = true
+	}
+	for _, want := range []string{"sess-1", "sess-zero"} {
+		if !gotIDs[want] {
+			t.Fatalf("missing session %q, got %v", want, gotIDs)
+		}
+	}
+	if gotIDs["sess-empty"] {
+		t.Fatalf("included no-usage session: %v", gotIDs)
+	}
+}
+
+func TestInspectDoesNotResolveSessionWithoutAuthoritativeUsage(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir codex: %v", err)
+	}
+	copyTestFixture(t, filepath.Join("..", "..", "fixtures", "codex", "no-usage-session.jsonl"),
+		filepath.Join(home, ".codex", "sessions", "no-usage.jsonl"))
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	app := NewWithStore(config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml")))
+	_, err := app.Inspect(context.Background(), "sess-empty")
+	if err == nil {
+		t.Fatal("expected not found for no-usage session")
+	}
+	if !errors.Is(err, ErrInspectSessionNotFound) {
+		t.Fatalf("error = %v, want ErrInspectSessionNotFound", err)
+	}
+}
+
 func copyTestFixture(t *testing.T, src, dst string) {
 	t.Helper()
 	data, err := os.ReadFile(src)
