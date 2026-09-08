@@ -149,8 +149,13 @@ func claudeTurns(sessionID string, parsed ParsedSession) []model.Turn {
 			Timestamp: parseTime(inv.Timestamp),
 			Model:     inv.Model,
 			Usage:     inv.Snapshot.ToModelUsageWithEvidence(recordID),
+			ContextAttribution: model.ContextAttribution{
+				Components: inv.Context,
+			},
 		}
 		turn.ID = recordID
+		turn.ContextAttribution.Input = model.SeparateInputAccounting(turn.Usage)
+		turn.ContextAttribution.Reconciliation = model.ReconcileContext(turn)
 		if inv.Conflict {
 			conflict := model.Evidence{Kind: "duplicate_conflict", Source: "claude_session"}
 			for _, m := range []*model.Measurement{&turn.Usage.Input, &turn.Usage.Cached, &turn.Usage.Output, &turn.Usage.Total} {

@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+
+	"github.com/thanhpham0406/tok-doctor/internal/model"
+	"github.com/thanhpham0406/tok-doctor/internal/source"
 )
 
 type assistantUsage struct {
@@ -14,10 +18,11 @@ type assistantUsage struct {
 	Timestamp  string `json:"timestamp"`
 	Type       string `json:"type"`
 	Message    struct {
-		ID    string       `json:"id"`
-		Role  string       `json:"role"`
-		Model string       `json:"model"`
-		Usage *usageFields `json:"usage"`
+		ID      string          `json:"id"`
+		Role    string          `json:"role"`
+		Model   string          `json:"model"`
+		Content json.RawMessage `json:"content"`
+		Usage   *usageFields    `json:"usage"`
 	} `json:"message"`
 }
 
@@ -66,6 +71,7 @@ type invocation struct {
 	Snapshot  UsageSnapshot
 	Timestamp string
 	Conflict  bool
+	Context   []model.ContextComponent
 }
 
 type ParsedSession struct {
@@ -118,6 +124,8 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 	// assistant usage block; treat it as the deduplication key because
 	// the local transcript can re-emit the same model response.
 	seenByMessageID := map[string]invocation{}
+	var pending []model.ContextComponent
+	historyCount := 0
 
 	for scanner.Scan() {
 		raw := scanner.Bytes()
@@ -129,7 +137,12 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 			continue
 		}
 		applyTimestamp(&session, entry.Timestamp)
+		recordID := claudeRecordID(entry, len(session.Invocations)+len(pending)+historyCount+1)
 		if entry.Type != "assistant" || entry.Message.Role != "assistant" {
+			pending = appendClaudeMessageContext(pending, entry, recordID, historyCount)
+			if entry.Message.Role != "" {
+				historyCount++
+			}
 			continue
 		}
 		if isRealModel(entry.Message.Model) {
@@ -142,8 +155,11 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 		if isSynthetic(entry.Message.Model) {
 			continue
 		}
+		invocationContext := dedupeContext(pending)
 		usage := entry.Message.Usage.snapshot()
 		if !usage.HasUsage {
+			pending = appendClaudeAssistantHistory(pending, entry, recordID, historyCount)
+			historyCount++
 			continue
 		}
 
@@ -153,8 +169,11 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 				Model:     entry.Message.Model,
 				Snapshot:  usage,
 				Timestamp: entry.Timestamp,
+				Context:   invocationContext,
 			})
 			session.Usage = session.Usage.add(usage)
+			pending = appendClaudeAssistantHistory(nil, entry, recordID, historyCount)
+			historyCount++
 			continue
 		}
 
@@ -166,10 +185,13 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 				Model:     entry.Message.Model,
 				Snapshot:  usage,
 				Timestamp: entry.Timestamp,
+				Context:   invocationContext,
 			}
 			seenByMessageID[ident] = inv
 			session.Invocations = append(session.Invocations, inv)
 			session.Usage = session.Usage.add(usage)
+			pending = appendClaudeAssistantHistory(nil, entry, recordID, historyCount)
+			historyCount++
 		case !snapshotsEqual(prev.Snapshot, usage):
 			for i := range session.Invocations {
 				if session.Invocations[i].ID == ident {
@@ -186,6 +208,132 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 		return ParsedSession{}, err
 	}
 	return session, nil
+}
+
+func appendClaudeMessageContext(components []model.ContextComponent, entry assistantUsage, recordID string, historyCount int) []model.ContextComponent {
+	switch entry.Message.Role {
+	case "user":
+		return append(components, claudeUserComponents(entry, recordID)...)
+	case "assistant":
+		return appendClaudeAssistantHistory(components, entry, recordID, historyCount)
+	default:
+		return components
+	}
+}
+
+func claudeUserComponents(entry assistantUsage, recordID string) []model.ContextComponent {
+	toolResults := claudeToolResultComponents(entry, recordID)
+	if len(toolResults) > 0 {
+		return toolResults
+	}
+	text := claudeTextContent(entry.Message.Content)
+	return []model.ContextComponent{{
+		Kind:        model.ContextUserPrompt,
+		Source:      "claude_session",
+		Record:      recordID,
+		ContentHash: source.ContentHash(text),
+		Observation: model.ContextObservedByAgent,
+		Measurement: source.EstimatedTextMeasurement(text),
+		Evidence:    []model.Evidence{claudeProvenance(recordID, "message.content")},
+	}}
+}
+
+func claudeToolResultComponents(entry assistantUsage, recordID string) []model.ContextComponent {
+	var blocks []struct {
+		Type    string          `json:"type"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(entry.Message.Content, &blocks); err != nil {
+		return nil
+	}
+	var out []model.ContextComponent
+	for i, block := range blocks {
+		if block.Type != "tool_result" {
+			continue
+		}
+		text := claudeTextContent(block.Content)
+		component := model.ContextComponent{
+			Kind:        model.ContextToolResult,
+			Source:      "claude_session",
+			Record:      recordID + "#tool_result:" + fmt.Sprint(i+1),
+			ContentHash: source.ContentHash(text),
+			Observation: model.ContextObservedByAgent,
+			Measurement: source.EstimatedTextMeasurement(text),
+			Evidence:    []model.Evidence{claudeProvenance(recordID, "message.content.tool_result")},
+		}
+		out = append(out, component)
+	}
+	return out
+}
+
+func appendClaudeAssistantHistory(components []model.ContextComponent, entry assistantUsage, recordID string, historyCount int) []model.ContextComponent {
+	if historyCount == 0 {
+		return components
+	}
+	text := claudeTextContent(entry.Message.Content)
+	return append(components, model.ContextComponent{
+		Kind:        model.ContextHistory,
+		Source:      "claude_session",
+		Record:      recordID,
+		ContentHash: source.ContentHash(text),
+		Observation: model.ContextObservedByAgent,
+		Measurement: source.EstimatedTextMeasurement(text),
+		Evidence:    []model.Evidence{claudeProvenance(recordID, "message.content")},
+	})
+}
+
+func claudeTextContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var blocks []struct {
+		Text    string          `json:"text"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, block := range blocks {
+		if block.Text != "" {
+			b.WriteString(block.Text)
+		} else if len(block.Content) > 0 {
+			b.WriteString(claudeTextContent(block.Content))
+		}
+	}
+	return b.String()
+}
+
+func claudeRecordID(entry assistantUsage, fallback int) string {
+	if entry.UUID != "" {
+		return entry.UUID
+	}
+	if entry.Message.ID != "" {
+		return entry.Message.ID
+	}
+	return "claude_session#record:" + fmt.Sprint(fallback)
+}
+
+func claudeProvenance(recordID, field string) model.Evidence {
+	return model.Evidence{Kind: model.EvidenceProvenance, Source: "claude_session", Record: recordID, Field: field}
+}
+
+func dedupeContext(components []model.ContextComponent) []model.ContextComponent {
+	seen := map[string]struct{}{}
+	out := make([]model.ContextComponent, 0, len(components))
+	for _, component := range components {
+		key := string(component.Kind) + "|" + component.Source + "|" + component.Record + "|" + component.Path
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, component)
+	}
+	return out
 }
 
 func snapshotsEqual(a, b UsageSnapshot) bool {

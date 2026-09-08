@@ -780,6 +780,48 @@ func TestInspectCommandEvidenceFlagShowsProvenance(t *testing.T) {
 	}
 }
 
+func TestInspectCommandContextFlagShowsAttribution(t *testing.T) {
+	withCLIFixtureHome(t)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"inspect", "sess-1", "--turn", "1", "--context"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute inspect context: %v", err)
+	}
+	got := stdout.String()
+	for _, want := range []string{"Context", "Instructions", "User prompt", "Tool results", "Top files", "AGENTS.md", "Reconciliation"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestInspectCommandJSONContextFlagIncludesTurn(t *testing.T) {
+	withCLIFixtureHome(t)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"inspect", "sess-1", "--turn", "1", "--context", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute inspect context json: %v", err)
+	}
+	var decoded struct {
+		Turn *model.Turn `json:"turn"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode json: %v\n%s", err, stdout.String())
+	}
+	if decoded.Turn == nil || len(decoded.Turn.ContextAttribution.Components) == 0 {
+		t.Fatalf("decoded = %+v, want turn context components", decoded)
+	}
+	if strings.Contains(stdout.String(), "Inspect the fixture.") || strings.Contains(stdout.String(), "synthetic output") {
+		t.Fatalf("json leaked raw context content: %s", stdout.String())
+	}
+}
+
 func TestInspectCommandWithoutEvidenceFlagHidesProvenance(t *testing.T) {
 	withCLIFixtureHome(t)
 	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))

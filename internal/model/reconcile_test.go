@@ -133,6 +133,7 @@ func TestValidEvidenceKindAcceptsKnownKinds(t *testing.T) {
 		EvidenceSourceValue,
 		EvidenceCumulativeDelta,
 		EvidenceAggregate,
+		EvidenceProvenance,
 	} {
 		if !ValidEvidenceKind(kind) {
 			t.Fatalf("evidence kind %q should be valid", kind)
@@ -140,6 +141,116 @@ func TestValidEvidenceKindAcceptsKnownKinds(t *testing.T) {
 	}
 	if ValidEvidenceKind("surprise") {
 		t.Fatal("unknown evidence kind should be rejected")
+	}
+}
+
+func TestReconcileContextCoverageLeavesUnknownRemainder(t *testing.T) {
+	turn := Turn{
+		Usage: Usage{
+			Input:  NewMeasurement(100, MeasurementMeasured),
+			Cached: NewMeasurement(20, MeasurementMeasured),
+		},
+		ContextAttribution: ContextAttribution{Components: []ContextComponent{
+			{Kind: ContextUserPrompt, Measurement: NewMeasurement(30, MeasurementEstimated), Observation: ContextObservedByAgent},
+			{Kind: ContextToolResult, Measurement: NewMeasurement(50, MeasurementEstimated), Observation: ContextObservedByAgent},
+			{Kind: ContextFile, Measurement: Measurement{Kind: MeasurementUnknown}, Observation: ContextObservedByAgent},
+		}},
+	}
+	rec := ReconcileContext(turn)
+	if rec.FreshAttributed.ValueOrZero() != 80 || rec.FreshUnknown.ValueOrZero() != 20 {
+		t.Fatalf("reconciliation = %+v, want attributed 80 unknown 20", rec)
+	}
+	if rec.FreshCoverage == nil || *rec.FreshCoverage != 0.8 {
+		t.Fatalf("coverage = %v, want 0.8", rec.FreshCoverage)
+	}
+	if rec.CachedContext.ValueOrZero() != 20 || rec.CachedAttributed.DisplayKind() != MeasurementUnknown {
+		t.Fatalf("cached reconciliation = %+v, want cached 20 unknown attribution", rec)
+	}
+	if rec.Conflict {
+		t.Fatal("conflict = true, want false")
+	}
+}
+
+func TestReconcileContextConflictDoesNotClampAttributed(t *testing.T) {
+	turn := Turn{
+		Usage: Usage{Input: NewMeasurement(50, MeasurementMeasured)},
+		ContextAttribution: ContextAttribution{Components: []ContextComponent{
+			{Kind: ContextUserPrompt, Measurement: NewMeasurement(60, MeasurementCounted), Observation: ContextObservedByAgent},
+		}},
+	}
+	rec := ReconcileContext(turn)
+	if rec.FreshAttributed.ValueOrZero() != 60 {
+		t.Fatalf("attributed = %d, want 60", rec.FreshAttributed.ValueOrZero())
+	}
+	if rec.FreshUnknown.ValueOrZero() != 0 {
+		t.Fatalf("unknown = %d, want 0 after conflict", rec.FreshUnknown.ValueOrZero())
+	}
+	if !rec.Conflict {
+		t.Fatal("conflict = false, want true")
+	}
+}
+
+func TestReconcileContextUsesCodexFreshInputAccounting(t *testing.T) {
+	turn := Turn{
+		Usage: Usage{
+			Input:  NewMeasurement(161135, MeasurementDerived),
+			Cached: NewMeasurement(160128, MeasurementDerived),
+		},
+		ContextAttribution: ContextAttribution{
+			Components: []ContextComponent{
+				{Kind: ContextToolResult, Measurement: NewMeasurement(693, MeasurementEstimated), Observation: ContextObservedByAgent},
+			},
+		},
+	}
+	turn.ContextAttribution.Input = CodexInputAccounting(turn.Usage)
+	rec := ReconcileContext(turn)
+	if rec.FreshInput.ValueOrZero() != 1007 {
+		t.Fatalf("fresh input = %d, want 1007", rec.FreshInput.ValueOrZero())
+	}
+	if rec.FreshUnknown.ValueOrZero() != 314 {
+		t.Fatalf("fresh unknown = %d, want 314", rec.FreshUnknown.ValueOrZero())
+	}
+	if rec.FreshCoverage == nil || *rec.FreshCoverage < 0.688 || *rec.FreshCoverage > 0.689 {
+		t.Fatalf("fresh coverage = %v, want about 0.688", rec.FreshCoverage)
+	}
+	if rec.CachedContext.ValueOrZero() != 160128 || rec.FullPayloadCoverage != nil {
+		t.Fatalf("reconciliation = %+v, want cached context and unavailable full coverage", rec)
+	}
+}
+
+func TestReconcileContextUsesSeparateFreshInputAccounting(t *testing.T) {
+	turn := Turn{
+		Usage: Usage{
+			Input:  NewMeasurement(920, MeasurementMeasured),
+			Cached: NewMeasurement(299106, MeasurementMeasured),
+		},
+		ContextAttribution: ContextAttribution{
+			Components: []ContextComponent{
+				{Kind: ContextUserPrompt, Measurement: NewMeasurement(47, MeasurementEstimated), Observation: ContextObservedByAgent},
+			},
+		},
+	}
+	turn.ContextAttribution.Input = SeparateInputAccounting(turn.Usage)
+	rec := ReconcileContext(turn)
+	if rec.FreshInput.ValueOrZero() != 920 || rec.FreshUnknown.ValueOrZero() != 873 {
+		t.Fatalf("reconciliation = %+v, want fresh 920 unknown 873", rec)
+	}
+	if rec.CachedContext.ValueOrZero() != 299106 || rec.CachedAttributed.DisplayKind() != MeasurementUnknown {
+		t.Fatalf("cached reconciliation = %+v, want cached 299106 unknown attribution", rec)
+	}
+}
+
+func TestSumAttributionMeasurementsDowngradesMixedToEstimated(t *testing.T) {
+	m, ok := SumAttributionMeasurements([]ContextComponent{
+		{Measurement: NewMeasurement(10, MeasurementCounted)},
+		{Measurement: NewMeasurement(15, MeasurementEstimated)},
+		{Measurement: Measurement{Kind: MeasurementUnknown}},
+	})
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if m.ValueOrZero() != 25 || m.Kind != MeasurementEstimated {
+		t.Fatalf("measurement = %+v, want 25 estimated", m)
 	}
 }
 

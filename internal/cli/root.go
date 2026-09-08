@@ -807,10 +807,12 @@ func sessionsResult(ctx context.Context, tok *app.App, sourceName string) (model
 
 func newInspectCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
 	var (
-		format   string
-		allTurns bool
-		turn     int
-		evidence bool
+		format     string
+		allTurns   bool
+		turn       int
+		evidence   bool
+		context    bool
+		contextAll bool
 	)
 
 	cmd := &cobra.Command{
@@ -820,6 +822,9 @@ func newInspectCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if allTurns && turn > 0 {
 				return fmt.Errorf("--all-turns and --turn cannot be combined")
+			}
+			if contextAll {
+				context = true
 			}
 			session, err := tok.Inspect(ctx, args[0])
 			if err != nil {
@@ -831,9 +836,17 @@ func newInspectCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 					AllTurns:     allTurns,
 					Turn:         turn,
 					ShowEvidence: evidence,
+					ShowContext:  context,
+					ContextAll:   contextAll,
 				})
 			case "json":
-				return reportinspect.RenderJSON(stdout, session)
+				return reportinspect.RenderJSONWithOptions(stdout, session, reportinspect.Options{
+					AllTurns:     allTurns,
+					Turn:         turn,
+					ShowEvidence: evidence,
+					ShowContext:  context,
+					ContextAll:   contextAll,
+				})
 			default:
 				return fmt.Errorf("unsupported format %q", format)
 			}
@@ -843,5 +856,7 @@ func newInspectCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 	cmd.Flags().BoolVar(&allTurns, "all-turns", false, "show every turn for the session")
 	cmd.Flags().IntVar(&turn, "turn", 0, "show a single turn by sequence number")
 	cmd.Flags().BoolVar(&evidence, "evidence", false, "include evidence/provenance in the rendered output")
+	cmd.Flags().BoolVar(&context, "context", false, "include context attribution for a single turn")
+	cmd.Flags().BoolVar(&contextAll, "context-all", false, "include every context component when rendering context attribution")
 	return cmd
 }

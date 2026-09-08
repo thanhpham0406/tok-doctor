@@ -171,6 +171,9 @@ func reconstructTurns(sessionID string, parsed ParsedSession) []model.Turn {
 			ID:        sessionID + "#" + strconv.Itoa(i+1),
 			Sequence:  i + 1,
 			Timestamp: parseTime(curr.Timestamp),
+			ContextAttribution: model.ContextAttribution{
+				Components: curr.Context,
+			},
 		}
 		if parsed.Model != "" {
 			turn.Model = parsed.Model
@@ -187,6 +190,8 @@ func reconstructTurns(sessionID string, parsed ParsedSession) []model.Turn {
 			}
 			attachCumulativeDelta(&turn.Usage, prevRecord, currRecord)
 		}
+		turn.ContextAttribution.Input = model.CodexInputAccounting(turn.Usage)
+		turn.ContextAttribution.Reconciliation = model.ReconcileContext(turn)
 		turns = append(turns, turn)
 	}
 	return turns

@@ -42,12 +42,13 @@ func (s Session) HasAuthoritativeUsage() bool {
 }
 
 type Turn struct {
-	ID        string     `json:"id"`
-	Sequence  int        `json:"sequence"`
-	Timestamp *time.Time `json:"timestamp,omitempty"`
-	Model     string     `json:"model,omitempty"`
-	Usage     Usage      `json:"usage"`
-	Evidence  []Evidence `json:"evidence,omitempty"`
+	ID                 string             `json:"id"`
+	Sequence           int                `json:"sequence"`
+	Timestamp          *time.Time         `json:"timestamp,omitempty"`
+	Model              string             `json:"model,omitempty"`
+	Usage              Usage              `json:"usage"`
+	ContextAttribution ContextAttribution `json:"contextAttribution,omitempty"`
+	Evidence           []Evidence         `json:"evidence,omitempty"`
 }
 
 type Invocation struct {
@@ -123,11 +124,12 @@ const (
 	EvidenceSourceValue     EvidenceKind = "source_value"
 	EvidenceCumulativeDelta EvidenceKind = "cumulative_delta"
 	EvidenceAggregate       EvidenceKind = "aggregate"
+	EvidenceProvenance      EvidenceKind = "provenance"
 )
 
 func ValidEvidenceKind(kind EvidenceKind) bool {
 	switch kind {
-	case EvidenceSourceValue, EvidenceCumulativeDelta, EvidenceAggregate:
+	case EvidenceSourceValue, EvidenceCumulativeDelta, EvidenceAggregate, EvidenceProvenance:
 		return true
 	default:
 		return false

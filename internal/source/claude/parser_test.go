@@ -3,6 +3,7 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thanhpham0406/tok-doctor/internal/model"
@@ -11,6 +12,60 @@ import (
 func fixturePath(t *testing.T, rel string) string {
 	t.Helper()
 	return filepath.Join("..", "..", "..", "fixtures", "claude", rel)
+}
+
+func TestParseSessionClassifiesUserPromptContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	lines := []string{
+		`{"uuid":"u1","type":"user","message":{"role":"user","content":"hello from user"}}`,
+		`{"uuid":"a1","type":"assistant","message":{"id":"msg_1","role":"assistant","model":"MiniMax-M3","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":20,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(parsed.Invocations) != 1 {
+		t.Fatalf("invocations = %d, want 1", len(parsed.Invocations))
+	}
+	components := parsed.Invocations[0].Context
+	if len(components) != 1 {
+		t.Fatalf("components = %+v, want one user prompt", components)
+	}
+	component := components[0]
+	if component.Kind != model.ContextUserPrompt || component.Observation != model.ContextObservedByAgent {
+		t.Fatalf("component = %+v, want user prompt observed by agent", component)
+	}
+	if component.Measurement.Kind != model.MeasurementEstimated {
+		t.Fatalf("measurement = %+v, want estimated", component.Measurement)
+	}
+	if component.ContentHash == "" || strings.Contains(component.ContentHash, "hello") {
+		t.Fatalf("content hash = %q, want non-raw hash", component.ContentHash)
+	}
+}
+
+func TestParseSessionClassifiesToolResultContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	lines := []string{
+		`{"uuid":"u1","type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"synthetic result"}]}}`,
+		`{"uuid":"a1","type":"assistant","message":{"id":"msg_1","role":"assistant","model":"MiniMax-M3","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":30,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	components := parsed.Invocations[0].Context
+	if len(components) != 1 {
+		t.Fatalf("components = %+v, want one tool result", components)
+	}
+	if components[0].Kind != model.ContextToolResult {
+		t.Fatalf("kind = %q, want tool_result", components[0].Kind)
+	}
 }
 
 func TestParseSessionUsageBasic(t *testing.T) {

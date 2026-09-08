@@ -3,6 +3,7 @@ package codex
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thanhpham0406/tok-doctor/internal/model"
@@ -243,5 +244,92 @@ func TestSumSnapshotsPreservesReasoningAvailability(t *testing.T) {
 	u := SumSnapshots(snaps)
 	if u.Reasoning.Value == nil || u.Reasoning.ValueOrZero() != 50 {
 		t.Fatalf("reasoning = %v, want pointer to 50 (single source reported it)", u.Reasoning)
+	}
+}
+
+func TestParseSessionClassifiesContextProvenance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	lines := []string{
+		`{"type":"session_meta","payload":{"id":"ctx"}}`,
+		`{"type":"response_item","payload":{"type":"message","id":"dev","role":"developer","content":[{"type":"input_text","text":"Follow instructions."}]}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"Read a file."}}`,
+		`{"type":"response_item","payload":{"type":"function_call","id":"call","call_id":"call","name":"functions.exec_command","arguments":"{\"cmd\":\"cat internal/model/model.go\"}"}}`,
+		`{"type":"response_item","payload":{"type":"function_call_output","id":"out","call_id":"call","output":"synthetic tool result"}}`,
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":110}}}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(parsed.Snapshots) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(parsed.Snapshots))
+	}
+	components := parsed.Snapshots[0].Context
+	wantKinds := map[model.ContextComponentKind]bool{
+		model.ContextInstructions: false,
+		model.ContextUserPrompt:   false,
+		model.ContextFile:         false,
+		model.ContextToolResult:   false,
+	}
+	for _, component := range components {
+		wantKinds[component.Kind] = true
+		if component.Observation != model.ContextObservedByAgent {
+			t.Fatalf("component observation = %q, want agent", component.Observation)
+		}
+		if component.Kind != model.ContextFile && component.Measurement.Kind != model.MeasurementEstimated {
+			t.Fatalf("component = %+v, want estimated non-file measurement", component)
+		}
+		if component.Kind == model.ContextFile && (component.Path != "internal/model/model.go" || component.Measurement.DisplayKind() != model.MeasurementUnknown) {
+			t.Fatalf("file component = %+v, want path with unknown tokens", component)
+		}
+	}
+	for kind, seen := range wantKinds {
+		if !seen {
+			t.Fatalf("missing context kind %q in %+v", kind, components)
+		}
+	}
+}
+
+func TestParseSessionContextDedupesStableRecordWithinTurn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	lines := []string{
+		`{"type":"response_item","payload":{"type":"message","id":"same","role":"user","content":[{"type":"input_text","text":"hello"}]}}`,
+		`{"type":"response_item","payload":{"type":"message","id":"same","role":"user","content":[{"type":"input_text","text":"hello"}]}}`,
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":11}}}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := len(parsed.Snapshots[0].Context); got != 1 {
+		t.Fatalf("components = %d, want duplicate stable record collapsed", got)
+	}
+}
+
+func TestParseSessionRepeatedFileAcrossTurnsRemainsVisible(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	lines := []string{
+		`{"type":"response_item","payload":{"type":"function_call","id":"call-1","call_id":"call-1","name":"functions.exec_command","arguments":"{\"cmd\":\"cat AGENTS.md\"}"}}`,
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":11}}}}`,
+		`{"type":"response_item","payload":{"type":"function_call","id":"call-2","call_id":"call-2","name":"functions.exec_command","arguments":"{\"cmd\":\"cat AGENTS.md\"}"}}`,
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0,"total_tokens":22}}}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for i, snap := range parsed.Snapshots {
+		if len(snap.Context) != 1 || snap.Context[0].Path != "AGENTS.md" {
+			t.Fatalf("turn %d context = %+v, want repeated AGENTS.md file component", i+1, snap.Context)
+		}
 	}
 }

@@ -114,6 +114,97 @@ func TestRenderSingleTurnShowsPerMetricMeasurementKind(t *testing.T) {
 	}
 }
 
+func TestRenderSingleTurnContextShowsReconciliationAndTopFiles(t *testing.T) {
+	session := model.Session{
+		ID:     "sess-context",
+		Source: "codex",
+		Turns: []model.Turn{{
+			ID:       "turn-1",
+			Sequence: 1,
+			Model:    "gpt-5",
+			Usage: model.Usage{
+				Input:  model.NewMeasurement(100, model.MeasurementMeasured),
+				Cached: model.NewMeasurement(10, model.MeasurementMeasured),
+			},
+			ContextAttribution: model.ContextAttribution{Components: []model.ContextComponent{
+				{Kind: model.ContextUserPrompt, Source: "codex_rollout", Record: "u1", Observation: model.ContextObservedByAgent, Measurement: model.NewMeasurement(25, model.MeasurementEstimated)},
+				{Kind: model.ContextFile, Source: "codex_rollout", Record: "f1", Path: "AGENTS.md", Observation: model.ContextObservedByAgent, Measurement: model.Measurement{Kind: model.MeasurementUnknown}},
+				{Kind: model.ContextToolResult, Source: "codex_rollout", Record: "t1", Observation: model.ContextObservedByAgent, Measurement: model.NewMeasurement(50, model.MeasurementEstimated)},
+			}},
+		}},
+	}
+	var out bytes.Buffer
+	if err := Render(&out, session, Options{Turn: 1, ShowContext: true}); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"Context", "User prompt", "Tool results", "Payload", "unknown", "Reconciliation", "Fresh input", "Fresh attributed", "75", "Fresh coverage", "75.0%", "Cached context", "10", "Full payload coverage", "unavailable", "Top files", "AGENTS.md"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestRenderJSONWithOptionsIncludesTurnContext(t *testing.T) {
+	session := model.Session{
+		ID: "sess-context-json",
+		Turns: []model.Turn{{
+			ID:       "turn-1",
+			Sequence: 1,
+			Usage: model.Usage{
+				Input:  model.NewMeasurement(10, model.MeasurementMeasured),
+				Cached: model.NewMeasurement(2, model.MeasurementMeasured),
+			},
+			ContextAttribution: model.ContextAttribution{Components: []model.ContextComponent{{
+				Kind:        model.ContextUserPrompt,
+				Source:      "codex_rollout",
+				Record:      "u1",
+				ContentHash: "sha256:test",
+				Observation: model.ContextObservedByAgent,
+				Measurement: model.NewMeasurement(4, model.MeasurementEstimated),
+			}}},
+		}},
+	}
+	var out bytes.Buffer
+	if err := RenderJSONWithOptions(&out, session, Options{Turn: 1, ShowContext: true}); err != nil {
+		t.Fatalf("RenderJSONWithOptions: %v", err)
+	}
+	if !strings.Contains(out.String(), `"turn"`) || !strings.Contains(out.String(), `"contextAttribution"`) {
+		t.Fatalf("json = %s, want turn context attribution", out.String())
+	}
+	for _, want := range []string{`"freshInput"`, `"freshAttributed"`, `"cachedContext"`, `"cachedAttributed"`} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("json = %s, want %s", out.String(), want)
+		}
+	}
+	if strings.Contains(out.String(), "hello from user") {
+		t.Fatalf("json leaked raw content: %s", out.String())
+	}
+}
+
+func TestRenderContextConflictIsVisible(t *testing.T) {
+	session := model.Session{
+		ID: "sess-conflict",
+		Turns: []model.Turn{{
+			ID:       "turn-1",
+			Sequence: 1,
+			Usage:    model.Usage{Input: model.NewMeasurement(5, model.MeasurementMeasured)},
+			ContextAttribution: model.ContextAttribution{Components: []model.ContextComponent{{
+				Kind:        model.ContextUserPrompt,
+				Observation: model.ContextObservedByAgent,
+				Measurement: model.NewMeasurement(10, model.MeasurementCounted),
+			}}},
+		}},
+	}
+	var out bytes.Buffer
+	if err := Render(&out, session, Options{Turn: 1, ShowContext: true}); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(out.String(), "Conflict") {
+		t.Fatalf("output = %q, want conflict", out.String())
+	}
+}
+
 func TestRenderShowsKindColumnWhenTurnKindsDiffer(t *testing.T) {
 	stamp := time.Date(2026, 9, 7, 22, 10, 0, 0, time.UTC)
 	session := model.Session{
