@@ -51,6 +51,15 @@ func TestSourceResolutionPrecedence(t *testing.T) {
 }
 
 func TestResetSourceFallsBackToAuto(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir codex: %v", err)
+	}
+	copyTestFixture(t, filepath.Join("..", "..", "fixtures", "codex", "basic-session.jsonl"),
+		filepath.Join(home, ".codex", "sessions", "codex.jsonl"))
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
 	store := config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml"))
 	app := NewWithStore(store)
 	if err := app.SetSource("codex", source.Override{Path: t.TempDir()}); err != nil {
@@ -66,6 +75,9 @@ func TestResetSourceFallsBackToAuto(t *testing.T) {
 	}
 	if result.Origin != source.OriginAuto {
 		t.Fatalf("Origin = %q, want auto", result.Origin)
+	}
+	if result.Location != filepath.Join(home, ".codex", "sessions") {
+		t.Fatalf("Location = %q, want codex sessions fixture", result.Location)
 	}
 }
 
