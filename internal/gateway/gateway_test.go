@@ -114,7 +114,7 @@ func TestRuntime_MultipleProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recorder: %v", err)
 	}
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	rt := NewRuntime(rec)
 	profiles := []Profile{
 		{Name: "alpha", Enabled: true, Listen: listen1, Protocol: "anthropic_messages", Source: "claude", Upstream: upstream1.URL},
@@ -123,14 +123,14 @@ func TestRuntime_MultipleProfiles(t *testing.T) {
 	if err := rt.Start(context.Background(), profiles); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer rt.Shutdown(context.Background())
+	defer func() { _ = rt.Shutdown(context.Background()) }()
 
 	for _, p := range profiles {
 		resp, err := http.Get("http://" + p.Listen + "/v1/anything?x=1")
 		if err != nil {
 			t.Fatalf("GET %s: %v", p.Name, err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status for %s = %d", p.Name, resp.StatusCode)
 		}
@@ -163,7 +163,7 @@ func TestRuntime_GracefulShutdown(t *testing.T) {
 	defer upstream.Close()
 	dir := t.TempDir()
 	rec, _ := NewFileRecorder(dir)
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	rt := NewRuntime(rec)
 	if err := rt.Start(context.Background(), []Profile{
 		{Name: "x", Enabled: true, Listen: listen, Protocol: "anthropic_messages", Source: "claude", Upstream: upstream.URL},
@@ -204,7 +204,7 @@ func TestProxy_ForwardsMethodPathQuery(t *testing.T) {
 
 	listen, _ := freeLoopback(t)
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	proxy, err := NewProxy(
 		Profile{Name: "p", Enabled: true, Listen: listen, Protocol: "anthropic_messages", Source: "claude", Upstream: upstream.URL},
 		AnthropicMessagesObserver{}, rec,
@@ -222,7 +222,7 @@ func TestProxy_ForwardsMethodPathQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	got := <-captured
 	if got.Method != http.MethodPost {
@@ -250,7 +250,7 @@ func TestProxy_AuthHeaderForwardedNotPersisted(t *testing.T) {
 	listen, _ := freeLoopback(t)
 	dir := t.TempDir()
 	rec, _ := NewFileRecorder(dir)
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	proxy, _ := NewProxy(
 		Profile{Name: "p", Enabled: true, Listen: listen, Protocol: "anthropic_messages", Source: "claude", Upstream: upstream.URL},
 		AnthropicMessagesObserver{}, rec,
@@ -261,7 +261,7 @@ func TestProxy_AuthHeaderForwardedNotPersisted(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", bytes.NewReader([]byte(`{"model":"x"}`)))
 	req.Header.Set("Authorization", "Bearer sk-secret-value")
 	resp, _ := http.DefaultClient.Do(req)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if v := <-got; v != "Bearer sk-secret-value" {
 		t.Fatalf("auth header was not forwarded: %q", v)
@@ -292,7 +292,7 @@ func TestProxy_UpstreamFailureSurfaced(t *testing.T) {
 
 	listen, _ := freeLoopback(t)
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	proxy, _ := NewProxy(
 		Profile{Name: "p", Enabled: true, Listen: listen, Protocol: "anthropic_messages", Source: "claude", Upstream: dead.URL},
 		AnthropicMessagesObserver{}, rec,
@@ -304,7 +304,7 @@ func TestProxy_UpstreamFailureSurfaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Post: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expected 502 from dead upstream, got %d", resp.StatusCode)
 	}
@@ -321,7 +321,7 @@ func TestProxy_ParserFailureContinues(t *testing.T) {
 
 	listen, _ := freeLoopback(t)
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	proxy, _ := NewProxy(
 		Profile{Name: "p", Enabled: true, Listen: listen, Protocol: "anthropic_messages", Source: "claude", Upstream: upstream.URL},
 		AnthropicMessagesObserver{}, rec,
@@ -334,7 +334,7 @@ func TestProxy_ParserFailureContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Post: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("proxy should still forward on parser failure, got %d", resp.StatusCode)
 	}
@@ -351,7 +351,7 @@ func TestProxy_StreamingPassesThrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
 		for _, c := range chunks {
-			fmt.Fprintf(w, "data: %s\n\n", c)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", c)
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -361,7 +361,7 @@ func TestProxy_StreamingPassesThrough(t *testing.T) {
 
 	listen, _ := freeLoopback(t)
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	proxy, _ := NewProxy(
 		Profile{Name: "p", Enabled: true, Listen: listen, Protocol: "anthropic_messages", Source: "claude", Upstream: upstream.URL},
 		AnthropicMessagesObserver{}, rec,
@@ -373,7 +373,7 @@ func TestProxy_StreamingPassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("expected SSE Content-Type, got %q", resp.Header.Get("Content-Type"))
 	}
@@ -416,7 +416,7 @@ func TestProxy_RawContentNeverPersisted(t *testing.T) {
 	listen, _ := freeLoopback(t)
 	dir := t.TempDir()
 	rec, _ := NewFileRecorder(dir)
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	proxy, _ := NewProxy(
 		Profile{Name: "p", Enabled: true, Listen: listen, Protocol: "anthropic_messages", Source: "claude", Upstream: upstream.URL},
 		AnthropicMessagesObserver{}, rec,
@@ -427,7 +427,7 @@ func TestProxy_RawContentNeverPersisted(t *testing.T) {
 	secret := "SECRET_PROMPT_LITERAL_DO_NOT_PERSIST"
 	body := []byte(fmt.Sprintf(`{"model":"claude-x","system":"%s","messages":[{"role":"user","content":"hi"}]}`, secret))
 	resp, _ := http.Post(srv.URL+"/v1/messages", "application/json", bytes.NewReader(body))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	data, err := os.ReadFile(filepath.Join(dir, "p.jsonl"))
 	if err != nil {
@@ -446,7 +446,7 @@ func TestProxy_CaptureIncludesProfileSourceProtocol(t *testing.T) {
 
 	listen, _ := freeLoopback(t)
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	proxy, _ := NewProxy(
 		Profile{Name: "alpha", Enabled: true, Listen: listen, Protocol: "openai_responses", Source: "codex", Upstream: upstream.URL},
 		OpenAIResponsesObserver{}, rec,
@@ -456,7 +456,7 @@ func TestProxy_CaptureIncludesProfileSourceProtocol(t *testing.T) {
 
 	body := []byte(`{"model":"gpt-x","instructions":"be terse","input":[{"role":"user","content":"hi"}]}`)
 	resp, _ := http.Post(srv.URL+"/v1/responses", "application/json", bytes.NewReader(body))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	persisted, _ := Replay(rec, "alpha")
 	if len(persisted) != 1 {
@@ -646,7 +646,7 @@ func TestProxy_NoBlockingOnRecorder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Post: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 var _ Recorder = (*FileRecorder)(nil)

@@ -389,13 +389,13 @@ func maybeUpdatePricingForMissing(cmd *cobra.Command, tok *app.App, result prici
 	if len(result.Missing) == 0 || !isTerminal(cmd.InOrStdin()) {
 		return result, nil
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "Pricing unavailable for:")
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Pricing unavailable for:")
 	for _, miss := range result.Missing {
 		label := miss.Model
 		if miss.Provider != "" {
 			label = miss.Provider + "/" + miss.Model
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", label)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", label)
 	}
 	ok, err := promptYesNo(cmd.OutOrStdout(), bufio.NewReader(cmd.InOrStdin()), "Update pricing catalog now? [y/N] ")
 	if err != nil || !ok {
@@ -491,7 +491,9 @@ func promptValue(w io.Writer, r *bufio.Reader, label string) (string, error) {
 }
 
 func promptOptionalValue(w io.Writer, r *bufio.Reader, label string) (string, error) {
-	fmt.Fprintf(w, "%s: ", label)
+	if _, err := fmt.Fprintf(w, "%s: ", label); err != nil {
+		return "", err
+	}
 	value, err := r.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
@@ -500,7 +502,9 @@ func promptOptionalValue(w io.Writer, r *bufio.Reader, label string) (string, er
 }
 
 func promptYesNo(w io.Writer, r *bufio.Reader, prompt string) (bool, error) {
-	fmt.Fprint(w, prompt)
+	if _, err := fmt.Fprint(w, prompt); err != nil {
+		return false, err
+	}
 	value, err := r.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false, err

@@ -23,7 +23,7 @@ func Serve(ctx context.Context, stdout io.Writer, result analyze.Result) error {
 	if err != nil {
 		return fmt.Errorf("listen web ui on %s: %w", DefaultAddr, err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	handler, err := NewHandler(result)
 	if err != nil {

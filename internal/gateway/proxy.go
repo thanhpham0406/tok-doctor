@@ -189,7 +189,7 @@ func readCappedBody(r io.ReadCloser) ([]byte, error) {
 	if r == nil {
 		return nil, nil
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	buf := bytes.NewBuffer(nil)
 	limited := io.LimitReader(r, MaxCaptureBytes+1)
 	if _, err := io.Copy(buf, limited); err != nil {

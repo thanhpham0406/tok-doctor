@@ -218,17 +218,24 @@ type StatusEntry struct {
 	State       string
 }
 
-func RenderTable(w io.Writer, rows []StatusEntry) {
-	fmt.Fprintln(w, "Profile          Listen           Protocol             Upstream")
-	fmt.Fprintln(w, "---------------  ---------------  -------------------- -------------------")
+func RenderTable(w io.Writer, rows []StatusEntry) error {
+	if _, err := fmt.Fprintln(w, "Profile          Listen           Protocol             Upstream"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "---------------  ---------------  -------------------- -------------------"); err != nil {
+		return err
+	}
 	for _, row := range rows {
-		fmt.Fprintf(w, "%-15s  %-15s  %-20s %s\n",
+		if _, err := fmt.Fprintf(w, "%-15s  %-15s  %-20s %s\n",
 			truncate(row.Profile, 15),
 			truncate(row.Listen, 15),
 			truncate(string(row.Protocol), 20),
 			truncate(row.Upstream, 60),
-		)
+		); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func truncate(s string, n int) string {

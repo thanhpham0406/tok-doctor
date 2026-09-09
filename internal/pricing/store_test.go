@@ -14,7 +14,7 @@ import (
 func TestRemoteCatalogValidUpdate(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", `"v1"`)
-		fmt.Fprint(w, testCatalogJSON("remote", "remote-model"))
+		_, _ = fmt.Fprint(w, testCatalogJSON("remote", "remote-model"))
 	}))
 	defer server.Close()
 
@@ -46,7 +46,7 @@ func TestUpdateRequestsPublicPricingCatalogPath(t *testing.T) {
 	seenPath := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenPath = r.URL.Path
-		fmt.Fprint(w, testCatalogJSON("remote", "remote-model"))
+		_, _ = fmt.Fprint(w, testCatalogJSON("remote", "remote-model"))
 	}))
 	defer server.Close()
 
@@ -71,10 +71,10 @@ func TestInvalidDownloadKeepsLastKnownGood(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls == 1 {
-			fmt.Fprint(w, testCatalogJSON("good", "good-model"))
+			_, _ = fmt.Fprint(w, testCatalogJSON("good", "good-model"))
 			return
 		}
-		fmt.Fprint(w, `{"version":"","profiles":[{}]}`)
+		_, _ = fmt.Fprint(w, `{"version":"","profiles":[{}]}`)
 	}))
 	defer server.Close()
 
@@ -128,7 +128,7 @@ func TestEmbeddedFallback(t *testing.T) {
 
 func TestCatalogPrecedenceOverrideDownloadedEmbedded(t *testing.T) {
 	cacheServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, testCatalogJSON("cache", "cache-model"))
+		_, _ = fmt.Fprint(w, testCatalogJSON("cache", "cache-model"))
 	}))
 	defer cacheServer.Close()
 	store := testStore(t, cacheServer.URL, "")
@@ -151,7 +151,7 @@ func TestCatalogPrecedenceOverrideDownloadedEmbedded(t *testing.T) {
 
 func TestUserOverrideBeatsDownloadedAndEmbeddedProfile(t *testing.T) {
 	cacheServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, testCatalogJSON("cache", "gpt-5.5"))
+		_, _ = fmt.Fprint(w, testCatalogJSON("cache", "gpt-5.5"))
 	}))
 	defer cacheServer.Close()
 	overridePath := filepath.Join(t.TempDir(), "override.json")

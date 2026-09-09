@@ -13,76 +13,128 @@ import (
 )
 
 func RenderStatus(w io.Writer, status pricing.Status) error {
-	fmt.Fprintln(w, "Pricing catalog")
-	fmt.Fprintln(w, strings.Repeat("─", 60))
-	fmt.Fprintf(w, "%-12s %s\n", "Source", status.Source)
-	fmt.Fprintf(w, "%-12s %s\n", "Version", orDash(status.Version))
+	if _, err := fmt.Fprintln(w, "Pricing catalog"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 60)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-12s %s\n", "Source", status.Source); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-12s %s\n", "Version", orDash(status.Version)); err != nil {
+		return err
+	}
 	if status.GeneratedAt != nil {
-		fmt.Fprintf(w, "%-12s %s\n", "Generated", status.GeneratedAt.Format("2006-01-02 15:04"))
+		if _, err := fmt.Fprintf(w, "%-12s %s\n", "Generated", status.GeneratedAt.Format("2006-01-02 15:04")); err != nil {
+			return err
+		}
 	}
 	if status.FetchedAt != nil {
-		fmt.Fprintf(w, "%-12s %s\n", "Fetched", status.FetchedAt.Format("2006-01-02 15:04"))
+		if _, err := fmt.Fprintf(w, "%-12s %s\n", "Fetched", status.FetchedAt.Format("2006-01-02 15:04")); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintf(w, "%-12s %d\n", "Profiles", status.Profiles)
-	fmt.Fprintf(w, "%-12s %s\n", "Remote", status.RemoteURL)
+	if _, err := fmt.Fprintf(w, "%-12s %d\n", "Profiles", status.Profiles); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-12s %s\n", "Remote", status.RemoteURL); err != nil {
+		return err
+	}
 	return nil
 }
 
 func RenderUpdate(w io.Writer, result pricing.UpdateResult, updateErr error) error {
 	if updateErr != nil {
-		fmt.Fprintln(w, "Update failed")
+		if _, err := fmt.Fprintln(w, "Update failed"); err != nil {
+			return err
+		}
 		if result.UsingCache {
-			fmt.Fprintf(w, "Using cached catalog %s\n", result.Version)
+			if _, err := fmt.Fprintf(w, "Using cached catalog %s\n", result.Version); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
 	if result.Updated {
-		fmt.Fprintln(w, "Pricing catalog updated")
+		if _, err := fmt.Fprintln(w, "Pricing catalog updated"); err != nil {
+			return err
+		}
 	} else {
-		fmt.Fprintln(w, "Pricing catalog unchanged")
+		if _, err := fmt.Fprintln(w, "Pricing catalog unchanged"); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintf(w, "%-10s %s\n", "Version", result.Version)
-	fmt.Fprintf(w, "%-10s %d\n", "Profiles", result.Profiles)
-	fmt.Fprintf(w, "%-10s %s\n", "Source", result.Source)
+	if _, err := fmt.Fprintf(w, "%-10s %s\n", "Version", result.Version); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-10s %d\n", "Profiles", result.Profiles); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-10s %s\n", "Source", result.Source); err != nil {
+		return err
+	}
 	return nil
 }
 
 func RenderList(w io.Writer, active pricing.ActiveCatalog) error {
-	fmt.Fprintln(w, "Pricing profiles")
-	fmt.Fprintln(w, strings.Repeat("─", 80))
+	if _, err := fmt.Fprintln(w, "Pricing profiles"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 80)); err != nil {
+		return err
+	}
 	if len(active.Catalog.Profiles) == 0 {
-		fmt.Fprintln(w, "No pricing profiles available")
-		return nil
+		_, err := fmt.Fprintln(w, "No pricing profiles available")
+		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "Provider\tSKU\tModel\tAliases\tCurrency\tTiers")
+	if _, err := fmt.Fprintln(tw, "Provider\tSKU\tModel\tAliases\tCurrency\tTiers"); err != nil {
+		return err
+	}
 	for _, profile := range active.Catalog.Profiles {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			profile.Provider,
 			profile.SKU,
 			orDash(profile.Model),
 			orDash(strings.Join(profile.Aliases, ", ")),
 			profile.Currency,
 			tierSummary(profile.Tiers),
-		)
+		); err != nil {
+			return err
+		}
 	}
 	return tw.Flush()
 }
 
 func RenderShow(w io.Writer, active pricing.ActiveCatalog, modelName string, profile pricing.PricingProfile, ok bool) error {
-	fmt.Fprintf(w, "Pricing %s\n", modelName)
-	fmt.Fprintln(w, strings.Repeat("─", 60))
-	if !ok {
-		fmt.Fprintln(w, "Pricing profile unavailable")
-		return nil
+	if _, err := fmt.Fprintf(w, "Pricing %s\n", modelName); err != nil {
+		return err
 	}
-	fmt.Fprintf(w, "%-14s %s\n", "Provider", profile.Provider)
-	fmt.Fprintf(w, "%-14s %s\n", "SKU", profile.SKU)
-	fmt.Fprintf(w, "%-14s %s\n", "Currency", profile.Currency)
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 60)); err != nil {
+		return err
+	}
+	if !ok {
+		_, err := fmt.Fprintln(w, "Pricing profile unavailable")
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-14s %s\n", "Provider", profile.Provider); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-14s %s\n", "SKU", profile.SKU); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-14s %s\n", "Currency", profile.Currency); err != nil {
+		return err
+	}
 	if profile.EffectiveFrom != nil {
-		fmt.Fprintf(w, "%-14s %s\n", "Effective", profile.EffectiveFrom.Format("2006-01-02"))
+		if _, err := fmt.Fprintf(w, "%-14s %s\n", "Effective", profile.EffectiveFrom.Format("2006-01-02")); err != nil {
+			return err
+		}
 	} else {
-		fmt.Fprintf(w, "%-14s %s\n", "Effective", "-")
+		if _, err := fmt.Fprintf(w, "%-14s %s\n", "Effective", "-"); err != nil {
+			return err
+		}
 	}
 	source := profile.CatalogSource
 	if source == "" {
@@ -92,57 +144,93 @@ func RenderShow(w io.Writer, active pricing.ActiveCatalog, modelName string, pro
 	if source == active.Source && active.Catalog.Version != "" {
 		catalogLabel += "/" + active.Catalog.Version
 	}
-	fmt.Fprintf(w, "%-14s %s\n", "Catalog", catalogLabel)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Rates per 1M tokens")
-	fmt.Fprintln(w, strings.Repeat("─", 60))
+	if _, err := fmt.Fprintf(w, "%-14s %s\n", "Catalog", catalogLabel); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Rates per 1M tokens"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 60)); err != nil {
+		return err
+	}
 	if len(profile.Tiers) == 0 {
-		renderRates(w, profile.Rates)
-		return nil
+		return renderRates(w, profile.Rates)
 	}
 	for _, tier := range profile.Tiers {
-		fmt.Fprintf(w, "%s (%s)\n", tier.Name, inputRange(tier.UpToInputTokens))
-		renderRates(w, tier.Rates)
+		if _, err := fmt.Fprintf(w, "%s (%s)\n", tier.Name, inputRange(tier.UpToInputTokens)); err != nil {
+			return err
+		}
+		if err := renderRates(w, tier.Rates); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func RenderMissing(w io.Writer, missing []pricing.MissingProfile) error {
-	fmt.Fprintln(w, "Missing pricing")
-	fmt.Fprintln(w, strings.Repeat("─", 80))
+	if _, err := fmt.Fprintln(w, "Missing pricing"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 80)); err != nil {
+		return err
+	}
 	if len(missing) == 0 {
-		fmt.Fprintln(w, "No unresolved pricing profiles found")
-		return nil
+		_, err := fmt.Fprintln(w, "No unresolved pricing profiles found")
+		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "Provider\tModel\tSessions\tTurns")
+	if _, err := fmt.Fprintln(tw, "Provider\tModel\tSessions\tTurns"); err != nil {
+		return err
+	}
 	for _, miss := range missing {
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\n", orDash(miss.Provider), miss.Model, miss.Sessions, miss.Turns)
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%d\t%d\n", orDash(miss.Provider), miss.Model, miss.Sessions, miss.Turns); err != nil {
+			return err
+		}
 	}
 	return tw.Flush()
 }
 
 func RenderAdd(w io.Writer, profile pricing.PricingProfile) error {
-	fmt.Fprintln(w, "Pricing override saved")
-	fmt.Fprintf(w, "%-10s %s\n", "Provider", profile.Provider)
-	fmt.Fprintf(w, "%-10s %s\n", "SKU", profile.SKU)
-	fmt.Fprintf(w, "%-10s %s\n", "Currency", profile.Currency)
+	if _, err := fmt.Fprintln(w, "Pricing override saved"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-10s %s\n", "Provider", profile.Provider); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-10s %s\n", "SKU", profile.SKU); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-10s %s\n", "Currency", profile.Currency); err != nil {
+		return err
+	}
 	return nil
 }
 
-func renderRate(w io.Writer, name string, micros int64) {
+func renderRate(w io.Writer, name string, micros int64) error {
 	if micros == 0 {
-		return
+		return nil
 	}
-	fmt.Fprintf(w, "%-14s %s\n", name, reportcost.FormatMicros(micros))
+	_, err := fmt.Fprintf(w, "%-14s %s\n", name, reportcost.FormatMicros(micros))
+	return err
 }
 
-func renderRates(w io.Writer, rates pricing.Rates) {
-	renderRate(w, "Input", rates.InputMicrosPerMillion)
-	renderRate(w, "Cached input", rates.CachedInputMicrosPerMillion)
-	renderRate(w, "Cache read", rates.CacheReadMicrosPerMillion)
-	renderRate(w, "Cache write", rates.CacheWriteMicrosPerMillion)
-	renderRate(w, "Output", rates.OutputMicrosPerMillion)
+func renderRates(w io.Writer, rates pricing.Rates) error {
+	if err := renderRate(w, "Input", rates.InputMicrosPerMillion); err != nil {
+		return err
+	}
+	if err := renderRate(w, "Cached input", rates.CachedInputMicrosPerMillion); err != nil {
+		return err
+	}
+	if err := renderRate(w, "Cache read", rates.CacheReadMicrosPerMillion); err != nil {
+		return err
+	}
+	if err := renderRate(w, "Cache write", rates.CacheWriteMicrosPerMillion); err != nil {
+		return err
+	}
+	return renderRate(w, "Output", rates.OutputMicrosPerMillion)
 }
 
 func tierSummary(tiers []pricing.PricingTier) string {

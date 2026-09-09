@@ -73,7 +73,7 @@ func countJSONLLines(path string) int64 {
 	if err != nil {
 		return 0
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var count int64
@@ -130,7 +130,7 @@ func Replay(r *FileRecorder, profile string) ([]Exchange, error) {
 		}
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	dec := json.NewDecoder(file)
 	var out []Exchange
 	for {

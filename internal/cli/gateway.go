@@ -35,9 +35,11 @@ func newGatewayStartCommand(ctx context.Context, stdout io.Writer, tok *app.App)
 			if err != nil {
 				return err
 			}
-			defer rt.Shutdown(context.Background())
+			defer func() { _ = rt.Shutdown(context.Background()) }()
 
-			printGatewayStartup(stdout, set.Profiles)
+			if err := printGatewayStartup(stdout, set.Profiles); err != nil {
+				return err
+			}
 
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
@@ -63,19 +65,25 @@ func newGatewayStatusCommand(stdout io.Writer, tok *app.App) *cobra.Command {
 				return err
 			}
 			sort.SliceStable(rows, func(i, j int) bool { return rows[i].Profile < rows[j].Profile })
-			fmt.Fprintln(stdout, "Profile          Requests   Last request   State")
-			fmt.Fprintln(stdout, "---------------  ---------  -------------  -------")
+			if _, err := fmt.Fprintln(stdout, "Profile          Requests   Last request   State"); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(stdout, "---------------  ---------  -------------  -------"); err != nil {
+				return err
+			}
 			for _, row := range rows {
 				last := "—"
 				if !row.LastSeen.IsZero() {
 					last = humaniseRelative(time.Since(row.LastSeen))
 				}
-				fmt.Fprintf(stdout, "%-15s  %9d  %-13s  %s\n",
+				if _, err := fmt.Fprintf(stdout, "%-15s  %9d  %-13s  %s\n",
 					truncate(row.Profile, 15),
 					row.Requests,
 					last,
 					row.State,
-				)
+				); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
@@ -84,19 +92,28 @@ func newGatewayStatusCommand(stdout io.Writer, tok *app.App) *cobra.Command {
 	return cmd
 }
 
-func printGatewayStartup(w io.Writer, profiles []gateway.Profile) {
-	fmt.Fprintln(w, "TokDoctor Gateway")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Profile          Listen           Protocol             Upstream")
+func printGatewayStartup(w io.Writer, profiles []gateway.Profile) error {
+	if _, err := fmt.Fprintln(w, "TokDoctor Gateway"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Profile          Listen           Protocol             Upstream"); err != nil {
+		return err
+	}
 	for _, p := range profiles {
-		fmt.Fprintf(w, "%-15s  %-15s  %-20s %s\n",
+		if _, err := fmt.Fprintf(w, "%-15s  %-15s  %-20s %s\n",
 			truncate(p.Name, 15),
 			truncate(p.Listen, 15),
 			truncate(p.Protocol, 20),
 			truncate(p.Upstream, 60),
-		)
+		); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintln(w)
+	_, err := fmt.Fprintln(w)
+	return err
 }
 
 func truncate(s string, n int) string {

@@ -98,20 +98,12 @@ func ParseSession(path string) (ParsedSession, error) {
 	if err != nil {
 		return ParsedSession{}, fmt.Errorf("open claude session %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	session, err := parseSession(f)
 	if err != nil {
 		return ParsedSession{}, fmt.Errorf("read claude session %s: %w", path, err)
 	}
 	return session, nil
-}
-
-func parseSessionUsage(r io.Reader) (UsageSnapshot, error) {
-	session, err := parseSession(r)
-	if err != nil {
-		return UsageSnapshot{}, err
-	}
-	return session.Usage, nil
 }
 
 func parseSession(r io.Reader) (ParsedSession, error) {

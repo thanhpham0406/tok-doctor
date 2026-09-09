@@ -83,7 +83,7 @@ func TestRenderTurnsInSequenceOrder(t *testing.T) {
 	idx1 := strings.Index(got, "1  22:10:00")
 	idx2 := strings.Index(got, "2  22:10:00")
 	idx3 := strings.Index(got, "3  22:10:00")
-	if !(idx1 >= 0 && idx2 > idx1 && idx3 > idx2) {
+	if idx1 < 0 || idx2 <= idx1 || idx3 <= idx2 {
 		t.Fatalf("output = %q, want sequence 1/2/3 in row order", got)
 	}
 }

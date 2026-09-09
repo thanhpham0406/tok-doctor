@@ -247,7 +247,7 @@ func ProbeEndpoint(ctx context.Context, name, displayName, endpoint string, orig
 		result.Reason = "source endpoint did not respond"
 		return result
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	result.Evidence[0].OK = true
 	server := strings.ToLower(resp.Header.Get("Server"))

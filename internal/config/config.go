@@ -74,7 +74,7 @@ func (s Store) Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("open config %s: %w", s.path, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	currentKind := ""
 	currentName := ""

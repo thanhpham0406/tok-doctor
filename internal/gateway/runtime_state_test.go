@@ -121,7 +121,7 @@ func TestRuntime_StateWrittenAfterBind(t *testing.T) {
 
 	dir := t.TempDir()
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	rt := newTestRuntime(t, newStateStore(dir), rec)
 
 	if err := rt.Start(context.Background(), []Profile{profileForListen("alpha", listen, upstream.URL)}); err != nil {
@@ -143,7 +143,7 @@ func TestRuntime_GracefulShutdownRemovesState(t *testing.T) {
 
 	storeDir := t.TempDir()
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	store := newStateStore(storeDir)
 	rt := newRuntimeWithStore(rec, store)
 
@@ -169,7 +169,7 @@ func TestStatus_RunningWhenAnotherProcessHasLiveState(t *testing.T) {
 
 	sharedDir := t.TempDir()
 	producerRec, _ := NewFileRecorder(t.TempDir())
-	defer producerRec.Close()
+	defer func() { _ = producerRec.Close() }()
 	producer := newRuntimeWithStore(producerRec, newStateStore(sharedDir))
 	if err := producer.Start(context.Background(), []Profile{profileForListen("alpha", listen, upstream.URL)}); err != nil {
 		t.Fatalf("producer Start: %v", err)
@@ -181,7 +181,7 @@ func TestStatus_RunningWhenAnotherProcessHasLiveState(t *testing.T) {
 	withStubCheckers(t, proc, lst)
 
 	consumerRec, _ := NewFileRecorder(t.TempDir())
-	defer consumerRec.Close()
+	defer func() { _ = consumerRec.Close() }()
 	consumer := newRuntimeWithStore(consumerRec, newStateStore(sharedDir))
 	rows := consumer.Status([]Profile{profileForListen("alpha", listen, upstream.URL)})
 	if len(rows) != 1 || rows[0].State != "running" {
@@ -199,7 +199,7 @@ func TestStatus_StoppedWhenNoStateExists(t *testing.T) {
 	withStubCheckers(t, proc, lst)
 
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	rt := newRuntimeWithStore(rec, newStateStore(t.TempDir()))
 	rows := rt.Status([]Profile{profileForListen("alpha", listen, "http://127.0.0.1:1")})
 	if len(rows) != 1 || rows[0].State != "stopped" {
@@ -229,7 +229,7 @@ func TestStatus_StoppedWhenPIDDead(t *testing.T) {
 	withStubCheckers(t, proc, lst)
 
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	rt := newRuntimeWithStore(rec, store)
 	rows := rt.Status([]Profile{profileForListen("alpha", listen, "http://127.0.0.1:1")})
 	if rows[0].State != "stopped" {
@@ -259,7 +259,7 @@ func TestStatus_StoppedWhenListenerMissing(t *testing.T) {
 	withStubCheckers(t, proc, lst)
 
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	rt := newRuntimeWithStore(rec, store)
 	rows := rt.Status([]Profile{profileForListen("alpha", listen, "http://127.0.0.1:1")})
 	if rows[0].State != "stopped" {
@@ -280,7 +280,7 @@ func TestStatus_UnrelatedListenerCannotMakeRunning(t *testing.T) {
 	withStubCheckers(t, proc, lst)
 
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	rt := newRuntimeWithStore(rec, newStateStore(sharedDir))
 	rows := rt.Status([]Profile{profileForListen("alpha", listen, "http://127.0.0.1:1")})
 	if rows[0].State != "stopped" {
@@ -311,7 +311,7 @@ func TestStatus_RestartReplacesStaleState(t *testing.T) {
 	}
 
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	rt := newRuntimeWithStore(rec, store)
 	if err := rt.Start(context.Background(), []Profile{profileForListen("alpha", listen, upstream.URL)}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -344,7 +344,7 @@ func TestStatus_MultipleProfilesIndependent(t *testing.T) {
 
 	sharedDir := t.TempDir()
 	producerRec, _ := NewFileRecorder(t.TempDir())
-	defer producerRec.Close()
+	defer func() { _ = producerRec.Close() }()
 	producer := newRuntimeWithStore(producerRec, newStateStore(sharedDir))
 	if err := producer.Start(context.Background(), []Profile{
 		profileForListen("alpha", listenA, upstreamA.URL),
@@ -366,7 +366,7 @@ func TestStatus_MultipleProfilesIndependent(t *testing.T) {
 	withStubCheckers(t, proc, lst)
 
 	consumerRec, _ := NewFileRecorder(t.TempDir())
-	defer consumerRec.Close()
+	defer func() { _ = consumerRec.Close() }()
 	consumer := newRuntimeWithStore(consumerRec, newStateStore(sharedDir))
 	rows := consumer.Status([]Profile{
 		profileForListen("alpha", listenA, upstreamA.URL),
@@ -397,7 +397,7 @@ func TestStatus_ExistingRequestCountAndLastRequestUnchanged(t *testing.T) {
 	sharedDir := t.TempDir()
 	recDir := t.TempDir()
 	rec, _ := NewFileRecorder(recDir)
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 
 	producer := newRuntimeWithStore(rec, newStateStore(sharedDir))
 	if err := producer.Start(context.Background(), []Profile{profileForListen("alpha", listen, upstream.URL)}); err != nil {
@@ -410,7 +410,7 @@ func TestStatus_ExistingRequestCountAndLastRequestUnchanged(t *testing.T) {
 		if err != nil {
 			t.Fatalf("post: %v", err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	proc := &stubProcess{alive: true}
@@ -418,7 +418,7 @@ func TestStatus_ExistingRequestCountAndLastRequestUnchanged(t *testing.T) {
 	withStubCheckers(t, proc, lst)
 
 	consumerRec, _ := NewFileRecorder(recDir)
-	defer consumerRec.Close()
+	defer func() { _ = consumerRec.Close() }()
 	consumer := newRuntimeWithStore(consumerRec, newStateStore(sharedDir))
 	rows := consumer.Status([]Profile{profileForListen("alpha", listen, upstream.URL)})
 	if len(rows) != 1 {
@@ -444,7 +444,7 @@ func TestStatus_StateContainsNoSecrets(t *testing.T) {
 
 	sharedDir := t.TempDir()
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	rt := newRuntimeWithStore(rec, newStateStore(sharedDir))
 	if err := rt.Start(context.Background(), []Profile{profileForListen("alpha", listen, upstream.URL)}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -472,7 +472,7 @@ func TestRuntime_StartFailsCleanlyIfStatePersistFails(t *testing.T) {
 	defer upstream.Close()
 
 	rec, _ := NewFileRecorder(t.TempDir())
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("not a dir"), 0o600); err != nil {
 		t.Fatalf("write blocker: %v", err)

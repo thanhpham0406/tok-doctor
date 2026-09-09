@@ -457,7 +457,7 @@ func (a *App) GatewayStatus(profileName string) ([]gateway.StatusEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer recorder.Close()
+	defer func() { _ = recorder.Close() }()
 	rt := gateway.NewRuntime(recorder)
 	return rt.Status(set.Profiles), nil
 }

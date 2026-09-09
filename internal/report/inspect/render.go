@@ -28,96 +28,164 @@ type Options struct {
 }
 
 func Render(w io.Writer, session model.Session, opts Options) error {
-	renderSummary(w, session, opts.ShowEvidence)
-	renderReconciliationHint(w, session)
+	if err := renderSummary(w, session, opts.ShowEvidence); err != nil {
+		return err
+	}
+	if err := renderReconciliationHint(w, session); err != nil {
+		return err
+	}
 
 	if opts.Turn > 0 {
-		renderSingleTurn(w, session, opts.Turn, opts)
-		return nil
+		return renderSingleTurn(w, session, opts.Turn, opts)
 	}
 	if opts.AllTurns {
-		renderAllTurns(w, session)
-		return nil
+		return renderAllTurns(w, session)
 	}
-	renderTopAndRecent(w, session)
-	return nil
+	return renderTopAndRecent(w, session)
 }
 
-func renderSummary(w io.Writer, session model.Session, showEvidence bool) {
-	fmt.Fprintf(w, "Session %s\n", truncateSessionID(session.ID))
-	fmt.Fprintln(w, strings.Repeat("─", 60))
-	fmt.Fprintf(w, "Source          %s\n", orDash(session.Source))
-	fmt.Fprintf(w, "Model           %s\n", orDash(session.Model))
-	fmt.Fprintf(w, "Started         %s\n", orDash(formatTime(session.StartedAt)))
-	fmt.Fprintf(w, "Updated         %s\n", orDash(formatTime(session.UpdatedAt)))
-	fmt.Fprintf(w, "Model calls     %d\n\n", len(session.Turns))
+func renderSummary(w io.Writer, session model.Session, showEvidence bool) error {
+	if _, err := fmt.Fprintf(w, "Session %s\n", truncateSessionID(session.ID)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 60)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Source          %s\n", orDash(session.Source)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Model           %s\n", orDash(session.Model)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Started         %s\n", orDash(formatTime(session.StartedAt))); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Updated         %s\n", orDash(formatTime(session.UpdatedAt))); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Model calls     %d\n\n", len(session.Turns)); err != nil {
+		return err
+	}
 
-	fmt.Fprintln(w, "Usage")
-	fmt.Fprintln(w, strings.Repeat("─", 60))
-	renderUsageMetric(w, "Input", session.Usage.Input)
-	renderUsageMetric(w, "Cached", session.Usage.Cached)
-	renderUsageMetric(w, "Output", session.Usage.Output)
-	renderUsageMetric(w, "Reasoning", session.Usage.Reasoning)
-	renderUsageMetric(w, "Total", session.Usage.Total)
+	if _, err := fmt.Fprintln(w, "Usage"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 60)); err != nil {
+		return err
+	}
+	if err := renderUsageMetric(w, "Input", session.Usage.Input); err != nil {
+		return err
+	}
+	if err := renderUsageMetric(w, "Cached", session.Usage.Cached); err != nil {
+		return err
+	}
+	if err := renderUsageMetric(w, "Output", session.Usage.Output); err != nil {
+		return err
+	}
+	if err := renderUsageMetric(w, "Reasoning", session.Usage.Reasoning); err != nil {
+		return err
+	}
+	if err := renderUsageMetric(w, "Total", session.Usage.Total); err != nil {
+		return err
+	}
 
 	if showEvidence {
 		if ev := renderSessionEvidence(session); ev != "" {
-			fmt.Fprintln(w)
-			fmt.Fprintln(w, "Evidence")
-			fmt.Fprintln(w, strings.Repeat("─", 60))
-			fmt.Fprint(w, ev)
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(w, "Evidence"); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(w, strings.Repeat("─", 60)); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprint(w, ev); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
-func renderReconciliationHint(w io.Writer, session model.Session) {
+func renderReconciliationHint(w io.Writer, session model.Session) error {
 	if len(session.Turns) == 0 {
-		return
+		return nil
 	}
 	comparison := model.ReconcileUsage(session)
 	if comparison.Matches() {
-		return
+		return nil
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Reconciliation  incomplete (turns do not fully account for authoritative session usage)")
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(w, "Reconciliation  incomplete (turns do not fully account for authoritative session usage)")
+	return err
 }
 
-func renderTopAndRecent(w io.Writer, session model.Session) {
+func renderTopAndRecent(w io.Writer, session model.Session) error {
 	if len(session.Turns) == 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "No reliable Turn breakdown available for this session.")
-		return
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintln(w, "No reliable Turn breakdown available for this session.")
+		return err
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Top expensive turns")
-	fmt.Fprintln(w, strings.Repeat("─", 96))
-	renderTurnTable(w, topExpensive(session.Turns, defaultTopLimit), mixed(session.Turns))
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Top expensive turns"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 96)); err != nil {
+		return err
+	}
+	if err := renderTurnTable(w, topExpensive(session.Turns, defaultTopLimit), mixed(session.Turns)); err != nil {
+		return err
+	}
 
 	recent := recentTurns(session.Turns, defaultRecentLimit)
 	if len(recent) > 0 && !sliceEqualsRecent(recent, topExpensive(session.Turns, defaultTopLimit)) {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "Recent turns")
-		fmt.Fprintln(w, strings.Repeat("─", 96))
-		renderTurnTable(w, recent, mixed(session.Turns))
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "Recent turns"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, strings.Repeat("─", 96)); err != nil {
+			return err
+		}
+		if err := renderTurnTable(w, recent, mixed(session.Turns)); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-func renderAllTurns(w io.Writer, session model.Session) {
+func renderAllTurns(w io.Writer, session model.Session) error {
 	if len(session.Turns) == 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "No reliable Turn breakdown available for this session.")
-		return
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintln(w, "No reliable Turn breakdown available for this session.")
+		return err
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Turns")
-	fmt.Fprintln(w, strings.Repeat("─", 96))
-	renderTurnTable(w, session.Turns, mixed(session.Turns))
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Turns"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 96)); err != nil {
+		return err
+	}
+	return renderTurnTable(w, session.Turns, mixed(session.Turns))
 }
 
-func renderSingleTurn(w io.Writer, session model.Session, sequence int, opts Options) {
+func renderSingleTurn(w io.Writer, session model.Session, sequence int, opts Options) error {
 	if len(session.Turns) == 0 {
-		fmt.Fprintf(w, "Turn %d not found in session %s (session has no reconstructable turns).\n", sequence, session.ID)
-		return
+		_, err := fmt.Fprintf(w, "Turn %d not found in session %s (session has no reconstructable turns).\n", sequence, session.ID)
+		return err
 	}
 	var match *model.Turn
 	for i := range session.Turns {
@@ -127,49 +195,92 @@ func renderSingleTurn(w io.Writer, session model.Session, sequence int, opts Opt
 		}
 	}
 	if match == nil {
-		fmt.Fprintf(w, "Turn %d not found in session %s\n", sequence, session.ID)
-		return
+		_, err := fmt.Fprintf(w, "Turn %d not found in session %s\n", sequence, session.ID)
+		return err
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "Turn #%d\n", sequence)
-	fmt.Fprintln(w, strings.Repeat("─", 60))
-	fmt.Fprintf(w, "Session       %s\n", truncateSessionID(session.ID))
-	fmt.Fprintf(w, "Source        %s\n", orDash(session.Source))
-	fmt.Fprintf(w, "Model         %s\n", orDash(match.Model))
-	fmt.Fprintf(w, "Time          %s\n", orDash(formatTurnTime(match.Timestamp)))
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Usage")
-	fmt.Fprintln(w, strings.Repeat("─", 60))
-	renderUsageMetric(w, "Input", match.Usage.Input)
-	renderUsageMetric(w, "Cached", match.Usage.Cached)
-	renderUsageMetric(w, "Output", match.Usage.Output)
-	renderUsageMetric(w, "Reasoning", match.Usage.Reasoning)
-	renderUsageMetric(w, "Total", match.Usage.Total)
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Turn #%d\n", sequence); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 60)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Session       %s\n", truncateSessionID(session.ID)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Source        %s\n", orDash(session.Source)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Model         %s\n", orDash(match.Model)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Time          %s\n", orDash(formatTurnTime(match.Timestamp))); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Usage"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 60)); err != nil {
+		return err
+	}
+	if err := renderUsageMetric(w, "Input", match.Usage.Input); err != nil {
+		return err
+	}
+	if err := renderUsageMetric(w, "Cached", match.Usage.Cached); err != nil {
+		return err
+	}
+	if err := renderUsageMetric(w, "Output", match.Usage.Output); err != nil {
+		return err
+	}
+	if err := renderUsageMetric(w, "Reasoning", match.Usage.Reasoning); err != nil {
+		return err
+	}
+	if err := renderUsageMetric(w, "Total", match.Usage.Total); err != nil {
+		return err
+	}
 
 	if opts.ShowContext {
-		renderContext(w, *match, opts.ContextAll)
+		if err := renderContext(w, *match, opts.ContextAll); err != nil {
+			return err
+		}
 	}
 
 	if opts.ShowEvidence {
 		if ev := renderTurnEvidence(*match); ev != "" {
-			fmt.Fprintln(w)
-			fmt.Fprintln(w, "Evidence")
-			fmt.Fprintln(w, strings.Repeat("─", 60))
-			fmt.Fprint(w, ev)
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(w, "Evidence"); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(w, strings.Repeat("─", 60)); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprint(w, ev); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
-func renderTurnTable(w io.Writer, turns []model.Turn, showKind bool) {
+func renderTurnTable(w io.Writer, turns []model.Turn, showKind bool) error {
 	if len(turns) == 0 {
-		fmt.Fprintln(w, "(none)")
-		return
+		_, err := fmt.Fprintln(w, "(none)")
+		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	if showKind {
-		fmt.Fprintln(tw, "#\tTime\tModel\tInput\tCached\tOutput\tReasoning\tTotal\tKind")
+		if _, err := fmt.Fprintln(tw, "#\tTime\tModel\tInput\tCached\tOutput\tReasoning\tTotal\tKind"); err != nil {
+			return err
+		}
 		for _, turn := range turns {
-			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			if _, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				turn.Sequence,
 				formatTurnTime(turn.Timestamp),
 				orDash(turn.Model),
@@ -179,12 +290,16 @@ func renderTurnTable(w io.Writer, turns []model.Turn, showKind bool) {
 				reportusage.FormatReasoning(turn.Usage.Reasoning),
 				formatUsageMetric(turn.Usage.Total),
 				formatMeasurement(turnKind(turn)),
-			)
+			); err != nil {
+				return err
+			}
 		}
 	} else {
-		fmt.Fprintln(tw, "#\tTime\tModel\tInput\tCached\tOutput\tReasoning\tTotal")
+		if _, err := fmt.Fprintln(tw, "#\tTime\tModel\tInput\tCached\tOutput\tReasoning\tTotal"); err != nil {
+			return err
+		}
 		for _, turn := range turns {
-			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			if _, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				turn.Sequence,
 				formatTurnTime(turn.Timestamp),
 				orDash(turn.Model),
@@ -193,33 +308,54 @@ func renderTurnTable(w io.Writer, turns []model.Turn, showKind bool) {
 				formatUsageMetric(turn.Usage.Output),
 				reportusage.FormatReasoning(turn.Usage.Reasoning),
 				formatUsageMetric(turn.Usage.Total),
-			)
+			); err != nil {
+				return err
+			}
 		}
 	}
-	tw.Flush()
+	return tw.Flush()
 }
 
-func renderContext(w io.Writer, turn model.Turn, showAll bool) {
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Context")
-	fmt.Fprintln(w, strings.Repeat("─", 60))
+func renderContext(w io.Writer, turn model.Turn, showAll bool) error {
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Context"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 60)); err != nil {
+		return err
+	}
 	summary := summarizeContext(turn.ContextAttribution.Components)
 	if len(summary) == 0 {
-		fmt.Fprintln(w, "No attributable context provenance available for this turn.")
+		if _, err := fmt.Fprintln(w, "No attributable context provenance available for this turn."); err != nil {
+			return err
+		}
 	} else {
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "Type\tTokens\tKind\tPayload")
-		for _, row := range summary {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", contextKindLabel(row.Kind), formatUsageMetric(row.Measurement), formatMeasurement(row.Measurement.DisplayKind()), "unknown")
+		if _, err := fmt.Fprintln(tw, "Type\tTokens\tKind\tPayload"); err != nil {
+			return err
 		}
-		tw.Flush()
+		for _, row := range summary {
+			if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", contextKindLabel(row.Kind), formatUsageMetric(row.Measurement), formatMeasurement(row.Measurement.DisplayKind()), "unknown"); err != nil {
+				return err
+			}
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
 	}
 
-	renderContextReconciliation(w, model.ReconcileContext(turn))
-	renderTopFiles(w, turn.ContextAttribution.Components)
-	if showAll {
-		renderAllContextComponents(w, turn.ContextAttribution.Components)
+	if err := renderContextReconciliation(w, model.ReconcileContext(turn)); err != nil {
+		return err
 	}
+	if err := renderTopFiles(w, turn.ContextAttribution.Components); err != nil {
+		return err
+	}
+	if showAll {
+		return renderAllContextComponents(w, turn.ContextAttribution.Components)
+	}
+	return nil
 }
 
 type contextSummaryRow struct {
@@ -256,23 +392,52 @@ func summarizeContext(components []model.ContextComponent) []contextSummaryRow {
 	return rows
 }
 
-func renderContextReconciliation(w io.Writer, rec model.ContextReconciliation) {
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Reconciliation")
-	fmt.Fprintln(w, strings.Repeat("─", 60))
-	fmt.Fprintf(w, "%-22s %-12s %s\n", "Fresh input", formatUsageMetric(rec.FreshInput), formatMeasurement(rec.FreshInput.DisplayKind()))
-	fmt.Fprintf(w, "%-22s %-12s %s\n", "Fresh attributed", formatUsageMetric(rec.FreshAttributed), formatMeasurement(rec.FreshAttributed.DisplayKind()))
-	fmt.Fprintf(w, "%-22s %-12s %s\n", "Fresh unknown", formatUsageMetric(rec.FreshUnknown), formatMeasurement(rec.FreshUnknown.DisplayKind()))
-	fmt.Fprintf(w, "%-22s %s\n", "Fresh coverage", formatCoverage(rec.FreshCoverage))
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "%-22s %-12s %s\n", "Cached context", formatUsageMetric(rec.CachedContext), formatMeasurement(rec.CachedContext.DisplayKind()))
-	fmt.Fprintf(w, "%-22s %-12s %s\n", "Cached attributed", formatUsageMetric(rec.CachedAttributed), formatMeasurement(rec.CachedAttributed.DisplayKind()))
-	fmt.Fprintf(w, "%-22s %s\n", "Cached coverage", formatCoverage(rec.CachedCoverage))
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "%-22s %s\n", "Full payload coverage", formatCoverage(rec.FullPayloadCoverage))
-	if rec.Conflict {
-		fmt.Fprintln(w, "Conflict              fresh attributed context exceeds fresh input")
+func renderContextReconciliation(w io.Writer, rec model.ContextReconciliation) error {
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
 	}
+	if _, err := fmt.Fprintln(w, "Reconciliation"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 60)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-22s %-12s %s\n", "Fresh input", formatUsageMetric(rec.FreshInput), formatMeasurement(rec.FreshInput.DisplayKind())); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-22s %-12s %s\n", "Fresh attributed", formatUsageMetric(rec.FreshAttributed), formatMeasurement(rec.FreshAttributed.DisplayKind())); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-22s %-12s %s\n", "Fresh unknown", formatUsageMetric(rec.FreshUnknown), formatMeasurement(rec.FreshUnknown.DisplayKind())); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-22s %s\n", "Fresh coverage", formatCoverage(rec.FreshCoverage)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-22s %-12s %s\n", "Cached context", formatUsageMetric(rec.CachedContext), formatMeasurement(rec.CachedContext.DisplayKind())); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-22s %-12s %s\n", "Cached attributed", formatUsageMetric(rec.CachedAttributed), formatMeasurement(rec.CachedAttributed.DisplayKind())); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-22s %s\n", "Cached coverage", formatCoverage(rec.CachedCoverage)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-22s %s\n", "Full payload coverage", formatCoverage(rec.FullPayloadCoverage)); err != nil {
+		return err
+	}
+	if rec.Conflict {
+		if _, err := fmt.Fprintln(w, "Conflict              fresh attributed context exceeds fresh input"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func formatCoverage(value *float64) string {
@@ -282,20 +447,30 @@ func formatCoverage(value *float64) string {
 	return fmt.Sprintf("%.1f%%", *value*100)
 }
 
-func renderTopFiles(w io.Writer, components []model.ContextComponent) {
+func renderTopFiles(w io.Writer, components []model.ContextComponent) error {
 	files := topFileComponents(components, defaultTopLimit)
 	if len(files) == 0 {
-		return
+		return nil
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Top files")
-	fmt.Fprintln(w, strings.Repeat("─", 60))
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Top files"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 60)); err != nil {
+		return err
+	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "Path\tTokens\tKind\tPayload")
-	for _, component := range files {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", component.Path, formatUsageMetric(component.Measurement), formatMeasurement(component.Measurement.DisplayKind()), "unknown")
+	if _, err := fmt.Fprintln(tw, "Path\tTokens\tKind\tPayload"); err != nil {
+		return err
 	}
-	tw.Flush()
+	for _, component := range files {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", component.Path, formatUsageMetric(component.Measurement), formatMeasurement(component.Measurement.DisplayKind()), "unknown"); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
 }
 
 func topFileComponents(components []model.ContextComponent, limit int) []model.ContextComponent {
@@ -320,17 +495,25 @@ func topFileComponents(components []model.ContextComponent, limit int) []model.C
 	return files
 }
 
-func renderAllContextComponents(w io.Writer, components []model.ContextComponent) {
+func renderAllContextComponents(w io.Writer, components []model.ContextComponent) error {
 	if len(components) == 0 {
-		return
+		return nil
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Context components")
-	fmt.Fprintln(w, strings.Repeat("─", 96))
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Context components"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("─", 96)); err != nil {
+		return err
+	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "Type\tSource\tRecord\tPath\tTokens\tKind\tObservation\tPayload")
+	if _, err := fmt.Fprintln(tw, "Type\tSource\tRecord\tPath\tTokens\tKind\tObservation\tPayload"); err != nil {
+		return err
+	}
 	for _, component := range components {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			contextKindLabel(component.Kind),
 			orDash(component.Source),
 			orDash(component.Record),
@@ -339,9 +522,11 @@ func renderAllContextComponents(w io.Writer, components []model.ContextComponent
 			formatMeasurement(component.Measurement.DisplayKind()),
 			orDash(string(component.Observation)),
 			"unknown",
-		)
+		); err != nil {
+			return err
+		}
 	}
-	tw.Flush()
+	return tw.Flush()
 }
 
 func contextKindLabel(kind model.ContextComponentKind) string {
@@ -447,8 +632,9 @@ func formatUsageMetric(metric model.Measurement) string {
 	return reportusage.FormatTokenCount(metric)
 }
 
-func renderUsageMetric(w io.Writer, name string, metric model.Measurement) {
-	fmt.Fprintf(w, "%-15s %-12s %s\n", name, formatUsageMetric(metric), formatMeasurement(metric.DisplayKind()))
+func renderUsageMetric(w io.Writer, name string, metric model.Measurement) error {
+	_, err := fmt.Fprintf(w, "%-15s %-12s %s\n", name, formatUsageMetric(metric), formatMeasurement(metric.DisplayKind()))
+	return err
 }
 
 func turnKind(turn model.Turn) model.MeasurementKind {
@@ -549,7 +735,7 @@ func renderSessionEvidence(session model.Session) string {
 				fmt.Fprintln(&out)
 			}
 			fmt.Fprintf(&out, "%s\n", metric.name)
-			writeEvidenceBlock(&out, ev)
+			_ = writeEvidenceBlock(&out, ev)
 			rendered = true
 		}
 	}
@@ -584,7 +770,7 @@ func renderTurnEvidence(turn model.Turn) string {
 			fmt.Fprintln(&out)
 		}
 		fmt.Fprintf(&out, "%s\n", metric.name)
-		writeEvidenceBlock(&out, metric.value.Evidence[0])
+		_ = writeEvidenceBlock(&out, metric.value.Evidence[0])
 		rendered = true
 	}
 	if !rendered {
@@ -593,25 +779,42 @@ func renderTurnEvidence(turn model.Turn) string {
 	return out.String()
 }
 
-func writeEvidenceBlock(out io.Writer, ev model.Evidence) {
-	fmt.Fprintf(out, "  Method      %s\n", formatEvidenceMethod(ev))
-	fmt.Fprintf(out, "  Source      %s\n", orDash(ev.Source))
+func writeEvidenceBlock(out io.Writer, ev model.Evidence) error {
+	if _, err := fmt.Fprintf(out, "  Method      %s\n", formatEvidenceMethod(ev)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(out, "  Source      %s\n", orDash(ev.Source)); err != nil {
+		return err
+	}
 	if ev.Field != "" {
-		fmt.Fprintf(out, "  Field       %s\n", ev.Field)
+		if _, err := fmt.Fprintf(out, "  Field       %s\n", ev.Field); err != nil {
+			return err
+		}
 	}
 	if ev.Record != "" {
-		fmt.Fprintf(out, "  Record      %s\n", ev.Record)
+		if _, err := fmt.Fprintf(out, "  Record      %s\n", ev.Record); err != nil {
+			return err
+		}
 	}
 	if ev.Previous != "" || ev.Current != "" {
-		fmt.Fprintf(out, "  Previous    %s\n", orDash(ev.Previous))
-		fmt.Fprintf(out, "  Current     %s\n", orDash(ev.Current))
+		if _, err := fmt.Fprintf(out, "  Previous    %s\n", orDash(ev.Previous)); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(out, "  Current     %s\n", orDash(ev.Current)); err != nil {
+			return err
+		}
 	}
 	if ev.Operation != "" {
-		fmt.Fprintf(out, "  Operation   %s\n", ev.Operation)
+		if _, err := fmt.Fprintf(out, "  Operation   %s\n", ev.Operation); err != nil {
+			return err
+		}
 	}
 	if ev.Count > 0 {
-		fmt.Fprintf(out, "  Count       %d\n", ev.Count)
+		if _, err := fmt.Fprintf(out, "  Count       %d\n", ev.Count); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func formatEvidenceMethod(ev model.Evidence) string {

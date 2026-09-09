@@ -280,7 +280,7 @@ func EmbeddedCatalog() (Catalog, error) {
 	if err != nil {
 		return Catalog{}, fmt.Errorf("open embedded pricing catalog: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return DecodeCatalog(f)
 }
 
@@ -426,7 +426,7 @@ func (s Store) Update() (UpdateResult, error) {
 	if err != nil {
 		return s.updateFailed(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotModified {
 		active, err := s.Active()
 		if err != nil {
@@ -867,7 +867,7 @@ func (s Store) readMeta() (CatalogMeta, error) {
 	if err != nil {
 		return CatalogMeta{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var meta CatalogMeta
 	if err := json.NewDecoder(f).Decode(&meta); err != nil {
 		return CatalogMeta{}, err
@@ -900,21 +900,21 @@ func atomicWritePerm(path string, data []byte, perm os.FileMode) error {
 	}
 	tmpName := tmp.Name()
 	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("set temp file permissions: %w", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("write temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("close temp file: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("replace %s atomically: %w", path, err)
 	}
 	return nil
@@ -933,7 +933,7 @@ func readCatalogFile(path string) (Catalog, error) {
 	if err != nil {
 		return Catalog{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return DecodeCatalog(io.LimitReader(f, maxCatalogBytes+1))
 }
 
