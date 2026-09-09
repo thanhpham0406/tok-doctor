@@ -600,7 +600,7 @@ func (a *App) GatewaySetup(ctx context.Context, opts GatewaySetupOptions) (gatew
 	return gateway.Profile{}, false, fmt.Errorf("gateway profile %s was not created", sourceName)
 }
 
-func (a *App) GatewayRemove(ctx context.Context, profileName string) error {
+func (a *App) GatewayRemove(ctx context.Context, profileName string, opts GatewayRemoveOptions) error {
 	if profileName == "" {
 		return errors.New("profile is required")
 	}
@@ -626,11 +626,36 @@ func (a *App) GatewayRemove(ctx context.Context, profileName string) error {
 			return err
 		}
 	}
-	if err := a.config.RemoveGatewayProfile(profileName); err != nil {
-		return err
+	removed := false
+	if _, ok := cfg.Gateway.Profiles[profileName]; ok {
+		if err := a.config.RemoveGatewayProfile(profileName); err != nil {
+			return err
+		}
+		removed = true
 	}
 	manager.Store.Remove(profileName)
+	if opts.Purge {
+		dir, err := gateway.DefaultDir()
+		if err != nil {
+			return err
+		}
+		recorder, err := gateway.NewFileRecorder(dir)
+		if err != nil {
+			return err
+		}
+		_ = recorder.Close()
+		if err := recorder.Purge(profileName); err != nil {
+			return err
+		}
+	}
+	if !removed && !opts.Purge {
+		return fmt.Errorf("gateway profile %q not found", profileName)
+	}
 	return nil
+}
+
+type GatewayRemoveOptions struct {
+	Purge bool
 }
 
 func defaultGatewayProtocol(sourceName string) string {

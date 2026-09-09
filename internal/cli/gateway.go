@@ -142,18 +142,28 @@ func newGatewaySetupCommand(ctx context.Context, stdout io.Writer, tok *app.App)
 }
 
 func newGatewayRemoveCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
+	var purge bool
 	cmd := &cobra.Command{
 		Use:   "remove <profile>",
 		Short: "Remove a gateway profile",
+		Long:  "Remove a gateway profile. Capture history is preserved unless --purge is given.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := tok.GatewayRemove(cmd.Context(), args[0]); err != nil {
+			if err := tok.GatewayRemove(cmd.Context(), args[0], app.GatewayRemoveOptions{Purge: purge}); err != nil {
 				return err
 			}
-			_, err := fmt.Fprintf(stdout, "Gateway profile removed: %s\n", args[0])
+			if _, err := fmt.Fprintf(stdout, "Gateway profile removed: %s\n", args[0]); err != nil {
+				return err
+			}
+			if purge {
+				_, err := fmt.Fprintln(stdout, "Capture history deleted.")
+				return err
+			}
+			_, err := fmt.Fprintln(stdout, "Capture history preserved.")
 			return err
 		},
 	}
+	cmd.Flags().BoolVar(&purge, "purge", false, "also delete capture history for the profile")
 	return cmd
 }
 

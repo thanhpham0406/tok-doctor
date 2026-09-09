@@ -290,7 +290,7 @@ func TestGatewayRemoveRemovesProfileAndPreservesCaptures(t *testing.T) {
 		t.Fatalf("write capture: %v", err)
 	}
 
-	if err := app.GatewayRemove(context.Background(), "codex"); err != nil {
+	if err := app.GatewayRemove(context.Background(), "codex", GatewayRemoveOptions{}); err != nil {
 		t.Fatalf("GatewayRemove: %v", err)
 	}
 	cfg, err := store.Load()
@@ -302,6 +302,144 @@ func TestGatewayRemoveRemovesProfileAndPreservesCaptures(t *testing.T) {
 	}
 	if _, err := os.Stat(capturePath); err != nil {
 		t.Fatalf("capture should be preserved: %v", err)
+	}
+}
+
+func TestGatewayRemovePurgeDeletesOnlyTargetCapture(t *testing.T) {
+	dir := t.TempDir()
+	gatewayDir := filepath.Join(dir, "gateway")
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", gatewayDir)
+	store := config.NewStoreAt(filepath.Join(dir, "config.toml"))
+	app := NewWithStore(store)
+	if _, _, err := app.GatewaySetup(context.Background(), GatewaySetupOptions{
+		Source:   "codex",
+		Listen:   "127.0.0.1:18891",
+		Upstream: "https://api.openai.com",
+	}); err != nil {
+		t.Fatalf("GatewaySetup codex: %v", err)
+	}
+	if _, _, err := app.GatewaySetup(context.Background(), GatewaySetupOptions{
+		Source:   "claude",
+		Listen:   "127.0.0.1:18892",
+		Upstream: "https://api.anthropic.com",
+	}); err != nil {
+		t.Fatalf("GatewaySetup claude: %v", err)
+	}
+
+	targetPath := filepath.Join(gatewayDir, "codex.jsonl")
+	otherPath := filepath.Join(gatewayDir, "claude.jsonl")
+	for _, p := range []string{targetPath, otherPath} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(p, []byte("{}\n{}\n"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	if err := app.GatewayRemove(context.Background(), "codex", GatewayRemoveOptions{Purge: true}); err != nil {
+		t.Fatalf("GatewayRemove purge: %v", err)
+	}
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("target capture should be deleted, stat err = %v", err)
+	}
+	if _, err := os.Stat(otherPath); err != nil {
+		t.Fatalf("other profile capture must be preserved: %v", err)
+	}
+}
+
+func TestGatewayRemovePurgeIdempotentWhenCaptureMissing(t *testing.T) {
+	dir := t.TempDir()
+	gatewayDir := filepath.Join(dir, "gateway")
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", gatewayDir)
+	store := config.NewStoreAt(filepath.Join(dir, "config.toml"))
+	app := NewWithStore(store)
+	if _, _, err := app.GatewaySetup(context.Background(), GatewaySetupOptions{
+		Source:   "codex",
+		Listen:   "127.0.0.1:18893",
+		Upstream: "https://api.openai.com",
+	}); err != nil {
+		t.Fatalf("GatewaySetup: %v", err)
+	}
+
+	if err := app.GatewayRemove(context.Background(), "codex", GatewayRemoveOptions{Purge: true}); err != nil {
+		t.Fatalf("purge missing capture should be a no-op, got: %v", err)
+	}
+}
+
+func TestGatewayRemovePurgeFailureSurfaces(t *testing.T) {
+	dir := t.TempDir()
+	gatewayDir := filepath.Join(dir, "gateway")
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", gatewayDir)
+	store := config.NewStoreAt(filepath.Join(dir, "config.toml"))
+	app := NewWithStore(store)
+	if _, _, err := app.GatewaySetup(context.Background(), GatewaySetupOptions{
+		Source:   "codex",
+		Listen:   "127.0.0.1:18894",
+		Upstream: "https://api.openai.com",
+	}); err != nil {
+		t.Fatalf("GatewaySetup: %v", err)
+	}
+	targetPath := filepath.Join(gatewayDir, "codex.jsonl")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Mkdir(targetPath, 0o700); err != nil {
+		t.Fatalf("seed non-empty capture path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetPath, "lock"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed capture child: %v", err)
+	}
+
+	err := app.GatewayRemove(context.Background(), "codex", GatewayRemoveOptions{Purge: true})
+	if err == nil {
+		t.Fatal("expected purge failure when capture file is not removable")
+	}
+	if _, statErr := os.Stat(targetPath); statErr != nil {
+		t.Fatalf("capture should still exist after failed purge: %v", statErr)
+	}
+}
+
+func TestGatewayRemoveUnknownProfileWithoutPurgeFails(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", filepath.Join(dir, "gateway"))
+	store := config.NewStoreAt(filepath.Join(dir, "config.toml"))
+	app := NewWithStore(store)
+
+	err := app.GatewayRemove(context.Background(), "ghost", GatewayRemoveOptions{})
+	if err == nil {
+		t.Fatal("expected error when removing a profile that does not exist")
+	}
+}
+
+func TestGatewayRemovePurgeDoesNotTouchRuntimeState(t *testing.T) {
+	dir := t.TempDir()
+	gatewayDir := filepath.Join(dir, "gateway")
+	runtimeDir := filepath.Join(dir, "runtime")
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", gatewayDir)
+	t.Setenv("TOKDOCTOR_GATEWAY_RUNTIME_DIR", runtimeDir)
+	store := config.NewStoreAt(filepath.Join(dir, "config.toml"))
+	app := NewWithStore(store)
+	if _, _, err := app.GatewaySetup(context.Background(), GatewaySetupOptions{
+		Source:   "codex",
+		Listen:   "127.0.0.1:18895",
+		Upstream: "https://api.openai.com",
+	}); err != nil {
+		t.Fatalf("GatewaySetup: %v", err)
+	}
+	runtimeState := filepath.Join(runtimeDir, "codex.json")
+	if err := os.MkdirAll(filepath.Dir(runtimeState), 0o700); err != nil {
+		t.Fatalf("mkdir runtime: %v", err)
+	}
+	if err := os.WriteFile(runtimeState, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write runtime: %v", err)
+	}
+
+	if err := app.GatewayRemove(context.Background(), "codex", GatewayRemoveOptions{}); err != nil {
+		t.Fatalf("GatewayRemove: %v", err)
+	}
+	if _, err := os.Stat(runtimeState); !os.IsNotExist(err) {
+		t.Fatalf("runtime state should be removed, stat err = %v", err)
 	}
 }
 

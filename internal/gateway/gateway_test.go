@@ -651,3 +651,91 @@ func TestProxy_NoBlockingOnRecorder(t *testing.T) {
 
 var _ Recorder = (*FileRecorder)(nil)
 var _ Recorder = (*recordingRecorder)(nil)
+
+// --- Purge ------------------------------------------------------------------
+
+func TestFileRecorder_PurgeDeletesTargetOnly(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := NewFileRecorder(dir)
+	if err != nil {
+		t.Fatalf("recorder: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+
+	rec.Record(Exchange{Profile: "alpha"})
+	rec.Record(Exchange{Profile: "beta"})
+
+	if err := rec.Purge("alpha"); err != nil {
+		t.Fatalf("Purge alpha: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "alpha.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("alpha capture should be gone, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "beta.jsonl")); err != nil {
+		t.Fatalf("beta capture must be preserved: %v", err)
+	}
+}
+
+func TestFileRecorder_PurgeMissingFileIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := NewFileRecorder(dir)
+	if err != nil {
+		t.Fatalf("recorder: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+
+	if err := rec.Purge("never-recorded"); err != nil {
+		t.Fatalf("Purge missing should succeed, got %v", err)
+	}
+}
+
+func TestFileRecorder_PurgeRejectsPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := NewFileRecorder(dir)
+	if err != nil {
+		t.Fatalf("recorder: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+
+	sibling := filepath.Join(filepath.Dir(dir), "sentinel.jsonl")
+	if err := os.WriteFile(sibling, []byte("keep-me"), 0o600); err != nil {
+		t.Fatalf("seed sentinel: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(sibling) })
+
+	cases := []string{"../sentinel", "..", ".", "/sentinel", "sub/dir", `evil\x00`, "a/b"}
+	for _, name := range cases {
+		if err := rec.Purge(name); err == nil {
+			t.Fatalf("expected purge to reject %q", name)
+		}
+	}
+	if data, err := os.ReadFile(sibling); err != nil || string(data) != "keep-me" {
+		t.Fatalf("sentinel must be untouched, err=%v data=%q", err, data)
+	}
+}
+
+func TestFileRecorder_PurgePreservesRequestCount(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := NewFileRecorder(dir)
+	if err != nil {
+		t.Fatalf("recorder: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+
+	for i := 0; i < 5; i++ {
+		rec.Record(Exchange{Profile: "alpha"})
+	}
+	summary, err := rec.Summary("alpha")
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if summary.Requests != 5 {
+		t.Fatalf("Summary.Requests = %d, want 5", summary.Requests)
+	}
+	if err := rec.Purge("alpha"); err != nil {
+		t.Fatalf("Purge: %v", err)
+	}
+	if _, err := os.Stat(summary.CaptureFile); !os.IsNotExist(err) {
+		t.Fatalf("capture file should be removed")
+	}
+}

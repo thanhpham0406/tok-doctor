@@ -3,11 +3,13 @@ package gateway
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -111,6 +113,33 @@ func (r *FileRecorder) fileFor(profile string) (*os.File, error) {
 
 func (r *FileRecorder) pathFor(profile string) string {
 	return filepath.Join(r.dir, profile+".jsonl")
+}
+
+func (r *FileRecorder) Purge(profile string) error {
+	if err := validateCaptureProfile(profile); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	path := r.pathFor(profile)
+	err := os.Remove(path)
+	if err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	return fmt.Errorf("purge capture %s: %w", profile, err)
+}
+
+func validateCaptureProfile(profile string) error {
+	if profile == "" {
+		return errors.New("capture profile is required")
+	}
+	if strings.ContainsAny(profile, "/\\") || profile == "." || profile == ".." || strings.Contains(profile, "\x00") {
+		return fmt.Errorf("invalid capture profile %q", profile)
+	}
+	if filepath.Base(profile) != profile {
+		return fmt.Errorf("invalid capture profile %q", profile)
+	}
+	return nil
 }
 
 func DefaultDir() (string, error) {
