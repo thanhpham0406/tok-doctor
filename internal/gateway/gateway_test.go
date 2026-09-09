@@ -500,8 +500,11 @@ func TestAnthropic_ClassifiesComponents(t *testing.T) {
 	if kinds[model.ContextInstructions] == 0 {
 		t.Fatalf("instructions not classified: %+v", kinds)
 	}
-	if kinds[model.ContextUserPrompt] == 0 {
-		t.Fatalf("user prompt not classified: %+v", kinds)
+	if kinds[model.ContextUserPrompt] != 0 {
+		t.Fatalf("latest user message classified as user prompt: %+v", kinds)
+	}
+	if kinds[model.ContextOther] == 0 {
+		t.Fatalf("latest user message not classified as safe other: %+v", kinds)
 	}
 	if kinds[model.ContextHistory] == 0 {
 		t.Fatalf("assistant history not classified: %+v", kinds)

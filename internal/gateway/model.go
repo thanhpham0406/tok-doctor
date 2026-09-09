@@ -40,6 +40,28 @@ type ExchangeRequest struct {
 	Bytes      int64                    `json:"bytes"`
 	BodyHash   string                   `json:"bodyHash,omitempty"`
 	Components []model.ContextComponent `json:"components,omitempty"`
+	Metadata   ExchangeRequestMetadata  `json:"metadata,omitempty"`
+}
+
+type ExchangeRequestMetadata struct {
+	AnthropicMessages *AnthropicMessagesMetadata `json:"anthropicMessages,omitempty"`
+}
+
+type AnthropicMessagesMetadata struct {
+	Messages []AnthropicMessageMetadata `json:"messages,omitempty"`
+}
+
+type AnthropicMessageMetadata struct {
+	Index  int                      `json:"index"`
+	Role   string                   `json:"role,omitempty"`
+	Blocks []AnthropicBlockMetadata `json:"blocks,omitempty"`
+}
+
+type AnthropicBlockMetadata struct {
+	Index               int    `json:"index"`
+	Type                string `json:"type,omitempty"`
+	ToolUseID           string `json:"toolUseId,omitempty"`
+	ToolResultToolUseID string `json:"toolResultToolUseId,omitempty"`
 }
 
 type ExchangeResponse struct {

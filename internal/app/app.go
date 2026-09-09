@@ -497,6 +497,93 @@ func (a *App) GatewayStatus(profileName string) ([]gateway.StatusEntry, error) {
 	return rt.Status(set.Profiles), nil
 }
 
+func (a *App) GatewayRequests(profileName string) ([]gateway.RequestSummary, error) {
+	if err := requireProfile(profileName); err != nil {
+		return nil, err
+	}
+	if err := gateway.ValidateCaptureProfile(profileName); err != nil {
+		return nil, err
+	}
+	recorder, err := a.openRecorder()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = recorder.Close() }()
+	exchanges, err := recorder.ListExchanges(profileName)
+	if err != nil {
+		return nil, err
+	}
+	summaries := make([]gateway.RequestSummary, 0, len(exchanges))
+	for _, e := range exchanges {
+		summaries = append(summaries, gateway.SummarizeRequest(e))
+	}
+	return summaries, nil
+}
+
+func (a *App) GatewayInspect(profileName, id string) (gateway.RequestSummary, error) {
+	if err := requireProfile(profileName); err != nil {
+		return gateway.RequestSummary{}, err
+	}
+	if err := gateway.ValidateCaptureProfile(profileName); err != nil {
+		return gateway.RequestSummary{}, err
+	}
+	if id == "" {
+		return gateway.RequestSummary{}, fmt.Errorf("exchange id is required")
+	}
+	recorder, err := a.openRecorder()
+	if err != nil {
+		return gateway.RequestSummary{}, err
+	}
+	defer func() { _ = recorder.Close() }()
+	exchange, err := recorder.FindExchange(profileName, id)
+	if err != nil {
+		return gateway.RequestSummary{}, err
+	}
+	return gateway.SummarizeRequest(exchange), nil
+}
+
+func (a *App) GatewayChains(profileName string) ([]gateway.ChainSummary, error) {
+	if err := requireProfile(profileName); err != nil {
+		return nil, err
+	}
+	if err := gateway.ValidateCaptureProfile(profileName); err != nil {
+		return nil, err
+	}
+	recorder, err := a.openRecorder()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = recorder.Close() }()
+	exchanges, err := gateway.Replay(recorder, profileName)
+	if err != nil {
+		return nil, err
+	}
+	return gateway.AnalyzeChains(exchanges), nil
+}
+
+func (a *App) GatewayChain(profileName, id string) (gateway.ChainSummary, error) {
+	chains, err := a.GatewayChains(profileName)
+	if err != nil {
+		return gateway.ChainSummary{}, err
+	}
+	return gateway.FindChain(chains, id)
+}
+
+func (a *App) openRecorder() (*gateway.FileRecorder, error) {
+	dir, err := gateway.DefaultDir()
+	if err != nil {
+		return nil, err
+	}
+	return gateway.NewFileRecorder(dir)
+}
+
+func requireProfile(name string) error {
+	if name == "" {
+		return errors.New("--profile is required")
+	}
+	return nil
+}
+
 func (a *App) GatewayStop(ctx context.Context, profileName string) ([]gateway.StatusEntry, error) {
 	cfg, err := a.config.Load()
 	if err != nil {

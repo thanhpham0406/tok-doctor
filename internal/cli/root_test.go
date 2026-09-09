@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/thanhpham0406/tok-doctor/internal/gateway"
 	"github.com/thanhpham0406/tok-doctor/internal/model"
 )
 
@@ -154,6 +156,299 @@ upstream = "https://api.openai.com"
 	got := stdout.String()
 	if !strings.Contains(got, "http://127.0.0.1:8787") || !strings.Contains(got, "stopped") {
 		t.Fatalf("status output = %q", got)
+	}
+}
+
+func seedGatewayCapture(t *testing.T, dir string, exchanges []gateway.Exchange) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir gateway: %v", err)
+	}
+	rec, err := gateway.NewFileRecorder(dir)
+	if err != nil {
+		t.Fatalf("recorder: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	for _, e := range exchanges {
+		rec.Record(e)
+	}
+}
+
+func TestGatewayRequestsAndInspectCommands(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	t.Setenv("TOKDOCTOR_CONFIG", configPath)
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", filepath.Join(dir, "gateway"))
+
+	captureDir := filepath.Join(dir, "gateway")
+	seedGatewayCapture(t, captureDir, []gateway.Exchange{
+		{
+			ID:        "gw-aaaa11112222",
+			Profile:   "codex",
+			Model:     "gpt-x",
+			StartedAt: time.Date(2026, 9, 9, 12, 17, 39, 0, time.UTC),
+			Protocol:  gateway.ProtocolOpenAIResponses,
+			Request: gateway.ExchangeRequest{
+				Endpoint: "/responses",
+				Bytes:    319488,
+				Components: []model.ContextComponent{
+					{Kind: model.ContextInstructions, Measurement: model.NewMeasurement(10, model.MeasurementEstimated)},
+					{Kind: model.ContextHistory, Measurement: model.NewMeasurement(50, model.MeasurementEstimated)},
+					{Kind: model.ContextFile, Path: "AGENTS.md", Measurement: model.NewMeasurement(20, model.MeasurementEstimated)},
+				},
+			},
+		},
+	})
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "requests", "--profile", "codex"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute requests: %v", err)
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "gw-aaaa1111") {
+		t.Fatalf("requests output missing short id: %q", got)
+	}
+	if !strings.Contains(got, "80*") {
+		t.Fatalf("requests output missing attributed context value: %q", got)
+	}
+	if !strings.Contains(got, "KB") {
+		t.Fatalf("requests output missing payload column: %q", got)
+	}
+
+	stdout.Reset()
+	cmd = newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "requests", "--profile", "codex", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute requests json: %v", err)
+	}
+	jsonOut := compactJSON(stdout.String())
+	if !strings.Contains(jsonOut, `"payloadBytes":319488`) {
+		t.Fatalf("json payloadBytes not numeric: %s", jsonOut)
+	}
+	if !strings.Contains(jsonOut, `"value":80`) {
+		t.Fatalf("json attributed value not numeric: %s", jsonOut)
+	}
+	if strings.Contains(jsonOut, "sk-") || strings.Contains(jsonOut, "Bearer ") {
+		t.Fatalf("json output leaks secret marker: %s", jsonOut)
+	}
+
+	stdout.Reset()
+	cmd = newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "inspect", "--profile", "codex", "gw-aaaa11112222"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute inspect: %v", err)
+	}
+	inspectOut := stdout.String()
+	if !strings.Contains(inspectOut, "Context breakdown") {
+		t.Fatalf("inspect output missing breakdown: %q", inspectOut)
+	}
+	if !strings.Contains(inspectOut, "AGENTS.md") {
+		t.Fatalf("inspect output missing file: %q", inspectOut)
+	}
+	if strings.Contains(inspectOut, "Bearer ") || strings.Contains(inspectOut, "sk-") {
+		t.Fatalf("inspect output leaks auth marker: %q", inspectOut)
+	}
+
+	stdout.Reset()
+	cmd = newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "inspect", "--profile", "codex", "gw-aaaa"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute inspect prefix: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Context breakdown") {
+		t.Fatalf("prefix inspect should resolve, got %q", stdout.String())
+	}
+
+	stdout.Reset()
+	cmd = newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "inspect", "--profile", "codex", "gw-zzz"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "exchange not found") {
+		t.Fatalf("expected not-found error, got %v", err)
+	}
+}
+
+func compactJSON(s string) string {
+	return strings.Join(strings.Fields(s), "")
+}
+
+func gatewayCLIChainExchanges() []gateway.Exchange {
+	return []gateway.Exchange{
+		gatewayCLIExchange("gw-cli1", 0, []string{"toolu_cli"}, nil, 80),
+		gatewayCLIExchange("gw-cli2", 1, nil, []string{"toolu_cli"}, 100),
+	}
+}
+
+func gatewayAmbiguousChainExchanges() []gateway.Exchange {
+	return []gateway.Exchange{
+		gatewayCLIExchange("gw-same1111", 0, []string{"toolu_a"}, nil, 20),
+		gatewayCLIExchange("gw-same1112", 1, nil, []string{"toolu_a"}, 30),
+		gatewayCLIExchange("gw-same2221", 2, []string{"toolu_b"}, nil, 40),
+		gatewayCLIExchange("gw-same2222", 3, nil, []string{"toolu_b"}, 50),
+	}
+}
+
+func gatewayCLIExchange(id string, seconds int64, toolUses, toolResults []string, contextTokens int64) gateway.Exchange {
+	return gateway.Exchange{
+		ID:        id,
+		Profile:   "codex",
+		Protocol:  gateway.ProtocolAnthropicMessages,
+		Model:     "mnm/MiniMax-M3",
+		StartedAt: time.Unix(seconds, 0),
+		Request: gateway.ExchangeRequest{
+			Method:   "POST",
+			Endpoint: "/v1/messages",
+			Components: []model.ContextComponent{
+				{Kind: model.ContextHistory, Measurement: model.NewMeasurement(contextTokens, model.MeasurementEstimated)},
+			},
+			Metadata: gateway.ExchangeRequestMetadata{
+				AnthropicMessages: &gateway.AnthropicMessagesMetadata{
+					Messages: gatewayCLIMessages(toolUses, toolResults),
+				},
+			},
+		},
+	}
+}
+
+func gatewayCLIMessages(toolUses, toolResults []string) []gateway.AnthropicMessageMetadata {
+	var messages []gateway.AnthropicMessageMetadata
+	if len(toolResults) == 0 {
+		messages = append(messages, gateway.AnthropicMessageMetadata{Index: len(messages), Role: "user", Blocks: []gateway.AnthropicBlockMetadata{{Index: 0, Type: "text"}}})
+	}
+	if len(toolUses) > 0 {
+		var blocks []gateway.AnthropicBlockMetadata
+		for i, id := range toolUses {
+			blocks = append(blocks, gateway.AnthropicBlockMetadata{Index: i, Type: "tool_use", ToolUseID: id})
+		}
+		messages = append(messages, gateway.AnthropicMessageMetadata{Index: len(messages), Role: "assistant", Blocks: blocks})
+	}
+	if len(toolResults) > 0 {
+		var blocks []gateway.AnthropicBlockMetadata
+		for i, id := range toolResults {
+			blocks = append(blocks, gateway.AnthropicBlockMetadata{Index: i, Type: "tool_result", ToolResultToolUseID: id})
+		}
+		messages = append(messages, gateway.AnthropicMessageMetadata{Index: len(messages), Role: "user", Blocks: blocks})
+	}
+	if len(messages) == 0 {
+		messages = append(messages, gateway.AnthropicMessageMetadata{Index: 0, Role: "user", Blocks: []gateway.AnthropicBlockMetadata{{Index: 0, Type: "text"}}})
+	}
+	return messages
+}
+
+func TestGatewayRequestsAndInspectMissingProfile(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	t.Setenv("TOKDOCTOR_CONFIG", configPath)
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", filepath.Join(dir, "gateway"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "requests"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--profile is required") {
+		t.Fatalf("expected --profile required error, got %v", err)
+	}
+}
+
+func TestGatewayRequestsRejectsExchangeIDArgument(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(dir, "config.toml"))
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", filepath.Join(dir, "gateway"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "requests", "--profile", "codex", "gw-8a29b0ed"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected positional argument error")
+	}
+	if !strings.Contains(err.Error(), `unknown command "gw-8a29b0ed"`) && !strings.Contains(err.Error(), "accepts 0 arg(s)") {
+		t.Fatalf("error = %q, want no args error", err.Error())
+	}
+}
+
+func TestGatewayChainsAndChainCommands(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	t.Setenv("TOKDOCTOR_CONFIG", configPath)
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", filepath.Join(dir, "gateway"))
+	captureDir := filepath.Join(dir, "gateway")
+	seedGatewayCapture(t, captureDir, gatewayCLIChainExchanges())
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "chains", "--profile", "codex"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute chains: %v", err)
+	}
+	out := stdout.String()
+	for _, want := range []string{"gwc-cli1", "2", "180*", "100*", "mnm/MiniMax-M3"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("chains output = %q, want %q", out, want)
+		}
+	}
+
+	stdout.Reset()
+	cmd = newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "chains", "--profile", "codex", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute chains json: %v", err)
+	}
+	jsonOut := compactJSON(stdout.String())
+	if !strings.Contains(jsonOut, `"modelCalls":2`) || !strings.Contains(jsonOut, `"value":180`) {
+		t.Fatalf("chains json missing numeric fields: %s", jsonOut)
+	}
+	if strings.Contains(jsonOut, `"180"`) || !strings.Contains(jsonOut, `"kind":"estimated"`) {
+		t.Fatalf("chains json kind/numeric mismatch: %s", jsonOut)
+	}
+
+	stdout.Reset()
+	cmd = newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "chain", "--profile", "codex", "gwc-cli1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute chain: %v", err)
+	}
+	detail := stdout.String()
+	if !strings.Contains(detail, "gw-cli1") || !strings.Contains(detail, "gw-cli2") || !strings.Contains(detail, "+20*") {
+		t.Fatalf("chain detail output = %q", detail)
+	}
+	if strings.Contains(detail, "SECRET_PROMPT") || strings.Contains(detail, "SECRET_TOOL_RESULT") {
+		t.Fatalf("chain detail leaks raw content: %q", detail)
+	}
+
+	stdout.Reset()
+	cmd = newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "chain", "--profile", "codex", "gwc-cli1", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute chain json: %v", err)
+	}
+	if jsonOut := compactJSON(stdout.String()); !strings.Contains(jsonOut, `"contextDelta":{"value":20`) {
+		t.Fatalf("chain json missing numeric delta: %s", jsonOut)
+	}
+}
+
+func TestGatewayChainLookupErrors(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(dir, "config.toml"))
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", filepath.Join(dir, "gateway"))
+	seedGatewayCapture(t, filepath.Join(dir, "gateway"), gatewayAmbiguousChainExchanges())
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "chain", "--profile", "codex", "gwc-same"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "ambiguous chain id") {
+		t.Fatalf("ambiguous error = %v", err)
+	}
+
+	stdout.Reset()
+	cmd = newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "chain", "--profile", "codex", "gwc-missing"})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "chain not found") {
+		t.Fatalf("missing error = %v", err)
 	}
 }
 

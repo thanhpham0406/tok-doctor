@@ -13,6 +13,10 @@ type Observer interface {
 	Parse(body []byte) []model.ContextComponent
 }
 
+type MetadataObserver interface {
+	ParseMetadata(body []byte) ExchangeRequestMetadata
+}
+
 func ObserverFor(name string) Observer {
 	switch Protocol(name) {
 	case ProtocolAnthropicMessages:
@@ -37,21 +41,14 @@ func ComponentFor(kind model.ContextComponentKind, position int, text string, pa
 }
 
 func ComponentTools(position int, body []byte) model.ContextComponent {
+	text := string(body)
 	return model.ContextComponent{
 		Kind:        model.ContextToolDefinition,
 		Position:    position,
-		ContentHash: source.ContentHash(string(body)),
+		ContentHash: source.ContentHash(text),
 		Observation: ObservationScope,
-		Measurement: byteCountMeasurement(body),
+		Measurement: source.EstimatedTextMeasurement(text),
 	}
-}
-
-func byteCountMeasurement(body []byte) model.Measurement {
-	if len(body) == 0 {
-		return model.Measurement{Kind: model.MeasurementUnknown}
-	}
-	v := int64(len(body))
-	return model.NewMeasurement(v, model.MeasurementCounted)
 }
 
 func dedupeComponents(in []model.ContextComponent) []model.ContextComponent {

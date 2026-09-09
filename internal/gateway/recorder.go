@@ -116,7 +116,7 @@ func (r *FileRecorder) pathFor(profile string) string {
 }
 
 func (r *FileRecorder) Purge(profile string) error {
-	if err := validateCaptureProfile(profile); err != nil {
+	if err := ValidateCaptureProfile(profile); err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -129,7 +129,7 @@ func (r *FileRecorder) Purge(profile string) error {
 	return fmt.Errorf("purge capture %s: %w", profile, err)
 }
 
-func validateCaptureProfile(profile string) error {
+func ValidateCaptureProfile(profile string) error {
 	if profile == "" {
 		return errors.New("capture profile is required")
 	}
@@ -179,4 +179,52 @@ func Replay(r *FileRecorder, profile string) ([]Exchange, error) {
 		return out[i].StartedAt.Before(out[j].StartedAt)
 	})
 	return out, nil
+}
+
+func (r *FileRecorder) ListExchanges(profile string) ([]Exchange, error) {
+	if r == nil {
+		return nil, nil
+	}
+	exchanges, err := Replay(r, profile)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(exchanges, func(i, j int) bool {
+		return exchanges[i].StartedAt.After(exchanges[j].StartedAt)
+	})
+	return exchanges, nil
+}
+
+var (
+	ErrExchangeNotFound  = errors.New("exchange not found")
+	ErrExchangeAmbiguous = errors.New("ambiguous exchange id")
+)
+
+func (r *FileRecorder) FindExchange(profile, id string) (Exchange, error) {
+	if id == "" {
+		return Exchange{}, fmt.Errorf("exchange id: %w", ErrExchangeNotFound)
+	}
+	exchanges, err := r.ListExchanges(profile)
+	if err != nil {
+		return Exchange{}, err
+	}
+	for _, e := range exchanges {
+		if e.ID == id {
+			return e, nil
+		}
+	}
+	var matches []Exchange
+	for _, e := range exchanges {
+		if strings.HasPrefix(e.ID, id) {
+			matches = append(matches, e)
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return Exchange{}, fmt.Errorf("exchange %q in profile %q: %w", id, profile, ErrExchangeNotFound)
+	default:
+		return Exchange{}, fmt.Errorf("exchange %q in profile %q: %w", id, profile, ErrExchangeAmbiguous)
+	}
 }

@@ -25,6 +25,10 @@ func newGatewayCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 	cmd.AddCommand(newGatewayStopCommand(ctx, stdout, tok))
 	cmd.AddCommand(newGatewaySetupCommand(ctx, stdout, tok))
 	cmd.AddCommand(newGatewayRemoveCommand(ctx, stdout, tok))
+	cmd.AddCommand(newGatewayRequestsCommand(stdout, tok))
+	cmd.AddCommand(newGatewayInspectCommand(stdout, tok))
+	cmd.AddCommand(newGatewayChainsCommand(stdout, tok))
+	cmd.AddCommand(newGatewayChainCommand(stdout, tok))
 	cmd.AddCommand(newGatewayServeCommand(ctx, tok))
 	return cmd
 }
@@ -164,6 +168,122 @@ func newGatewayRemoveCommand(ctx context.Context, stdout io.Writer, tok *app.App
 		},
 	}
 	cmd.Flags().BoolVar(&purge, "purge", false, "also delete capture history for the profile")
+	return cmd
+}
+
+func newGatewayRequestsCommand(stdout io.Writer, tok *app.App) *cobra.Command {
+	var (
+		profileName string
+		format      string
+	)
+	cmd := &cobra.Command{
+		Use:   "requests",
+		Short: "List captured gateway requests with attributed context totals",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			summaries, err := tok.GatewayRequests(profileName)
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return gateway.RenderRequests(stdout, summaries)
+			case "json":
+				return writeJSON(stdout, summaries)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&profileName, "profile", "", "profile to list requests for (required)")
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	return cmd
+}
+
+func newGatewayInspectCommand(stdout io.Writer, tok *app.App) *cobra.Command {
+	var (
+		profileName string
+		format      string
+	)
+	cmd := &cobra.Command{
+		Use:   "inspect <exchange-id>",
+		Short: "Show the attributed context breakdown for a captured gateway request",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			summary, err := tok.GatewayInspect(profileName, args[0])
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return gateway.RenderInspect(stdout, summary)
+			case "json":
+				return writeJSON(stdout, summary)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&profileName, "profile", "", "profile the exchange was captured under (required)")
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	return cmd
+}
+
+func newGatewayChainsCommand(stdout io.Writer, tok *app.App) *cobra.Command {
+	var (
+		profileName string
+		format      string
+	)
+	cmd := &cobra.Command{
+		Use:   "chains",
+		Short: "List correlated gateway model-call chains",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			chains, err := tok.GatewayChains(profileName)
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return gateway.RenderChains(stdout, chains)
+			case "json":
+				return writeJSON(stdout, chains)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&profileName, "profile", "", "profile to list chains for (required)")
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	return cmd
+}
+
+func newGatewayChainCommand(stdout io.Writer, tok *app.App) *cobra.Command {
+	var (
+		profileName string
+		format      string
+	)
+	cmd := &cobra.Command{
+		Use:   "chain <chain-id>",
+		Short: "Show a correlated gateway model-call chain",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			chain, err := tok.GatewayChain(profileName, args[0])
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return gateway.RenderChain(stdout, chain)
+			case "json":
+				return writeJSON(stdout, chain)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&profileName, "profile", "", "profile the chain was captured under (required)")
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
 	return cmd
 }
 

@@ -107,6 +107,7 @@ func (p *Proxy) captureMiddleware(next http.Handler) http.Handler {
 		r.ContentLength = int64(len(body))
 
 		components := p.parseComponents(body)
+		metadata := p.parseMetadata(body)
 		exchange := Exchange{
 			ID:         newExchangeID(),
 			Profile:    p.Profile,
@@ -120,6 +121,7 @@ func (p *Proxy) captureMiddleware(next http.Handler) http.Handler {
 				Bytes:      int64(len(body)),
 				BodyHash:   contentHash(body),
 				Components: components,
+				Metadata:   metadata,
 			},
 		}
 		if p.Observer != nil {
@@ -143,6 +145,17 @@ func (p *Proxy) parseComponents(body []byte) []model.ContextComponent {
 		return nil
 	}
 	return components
+}
+
+func (p *Proxy) parseMetadata(body []byte) ExchangeRequestMetadata {
+	observer, ok := p.Observer.(MetadataObserver)
+	if !ok || len(body) == 0 {
+		return ExchangeRequestMetadata{}
+	}
+	defer func() {
+		_ = recover()
+	}()
+	return observer.ParseMetadata(body)
 }
 
 func (p *Proxy) observeResponse(resp *http.Response) error {
