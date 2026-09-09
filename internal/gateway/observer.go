@@ -17,6 +17,16 @@ type MetadataObserver interface {
 	ParseMetadata(body []byte) ExchangeRequestMetadata
 }
 
+type ResponseObserver interface {
+	ParseResponse(body []byte) *OpenAIResponsesResponseMeta
+	ParseResponseUsage(body []byte) *ProviderUsage
+}
+
+type StreamUsageObserver interface {
+	ParseStreamEvent(event []byte) *ProviderUsage
+	MaxStreamEventBytes() int
+}
+
 func ObserverFor(name string) Observer {
 	switch Protocol(name) {
 	case ProtocolAnthropicMessages:

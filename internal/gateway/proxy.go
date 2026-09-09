@@ -164,7 +164,8 @@ func (p *Proxy) observeResponse(resp *http.Response) error {
 		return nil
 	}
 	exchange.Response.Status = resp.StatusCode
-	exchange.Response.Stream = strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
+	stream := strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
+	exchange.Response.Stream = stream
 	exchange.Response.ResponseID = firstNonEmpty(
 		resp.Header.Get("x-request-id"),
 		resp.Header.Get("request-id"),
@@ -176,13 +177,104 @@ func (p *Proxy) observeResponse(resp *http.Response) error {
 	)
 	exchange.Response.LatencyMs = time.Since(exchange.StartedAt).Milliseconds()
 
+	if !stream {
+		body, ok := p.readNonStreamResponseBody(resp)
+		if ok && len(body) > 0 {
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			resp.ContentLength = int64(len(body))
+		}
+		if respObserver, hasResp := p.Observer.(ResponseObserver); hasResp && len(body) > 0 {
+			if meta := respObserver.ParseResponse(body); meta != nil {
+				exchange.Response.OpenAIResponses = meta
+				if meta.ResponseID != "" && exchange.Response.ResponseID == "" {
+					exchange.Response.ResponseID = meta.ResponseID
+				}
+			}
+			if usage := respObserver.ParseResponseUsage(body); usage != nil {
+				exchange.Response.ProviderUsage = usage
+			}
+		}
+	} else {
+		if streamObserver, hasStream := p.Observer.(StreamUsageObserver); hasStream {
+			wrapper := newStreamObserver(streamObserver, resp.Body, p.Recorder, exchange)
+			resp.Body = wrapper
+			if usage := parseUsageFromHeaders(resp.Header); usage != nil {
+				usage.Source = model.MeasurementDerived
+				exchange.Response.Usage = usage
+			}
+			p.applyObservedUsage(exchange)
+			return nil
+		}
+	}
+
 	if usage := parseUsageFromHeaders(resp.Header); usage != nil {
 		usage.Source = model.MeasurementDerived
 		exchange.Response.Usage = usage
 	}
 
+	p.applyObservedUsage(exchange)
 	p.Recorder.Record(*exchange)
 	return nil
+}
+
+func (p *Proxy) applyObservedUsage(exchange *Exchange) {
+	ApplyProviderUsageToExchange(exchange)
+}
+
+func ApplyProviderUsageToExchange(exchange *Exchange) {
+	if exchange == nil || exchange.Response.ProviderUsage == nil {
+		return
+	}
+	if exchange.Response.Usage == nil {
+		usage := providerUsageToObserved(exchange.Response.ProviderUsage)
+		exchange.Response.Usage = &usage
+		return
+	}
+	if exchange.Response.Usage.Input == 0 && exchange.Response.ProviderUsage.Input != nil {
+		exchange.Response.Usage.Input = *exchange.Response.ProviderUsage.Input
+	}
+	if exchange.Response.Usage.Cached == 0 && exchange.Response.ProviderUsage.CachedInput != nil {
+		exchange.Response.Usage.Cached = *exchange.Response.ProviderUsage.CachedInput
+	}
+	if exchange.Response.Usage.Output == 0 && exchange.Response.ProviderUsage.Output != nil {
+		exchange.Response.Usage.Output = *exchange.Response.ProviderUsage.Output
+	}
+	if exchange.Response.Usage.Reasoning == 0 && exchange.Response.ProviderUsage.ReasoningOutput != nil {
+		exchange.Response.Usage.Reasoning = *exchange.Response.ProviderUsage.ReasoningOutput
+	}
+}
+
+func (p *Proxy) readNonStreamResponseBody(resp *http.Response) ([]byte, bool) {
+	if resp == nil || resp.Body == nil {
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxCaptureBytes+1))
+	if err != nil {
+		return nil, false
+	}
+	_ = resp.Body.Close()
+	if len(body) > MaxCaptureBytes {
+		return body[:MaxCaptureBytes], true
+	}
+	return body, true
+}
+
+func providerUsageToObserved(p *ProviderUsage) ObservedUsage {
+	out := ObservedUsage{Source: model.MeasurementMeasured}
+	if p.Input != nil {
+		out.Input = *p.Input
+	}
+	if p.CachedInput != nil {
+		out.Cached = *p.CachedInput
+	}
+	if p.Output != nil {
+		out.Output = *p.Output
+	}
+	if p.ReasoningOutput != nil {
+		out.Reasoning = *p.ReasoningOutput
+	}
+	out.Total = out.Input + out.Output
+	return out
 }
 
 func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {

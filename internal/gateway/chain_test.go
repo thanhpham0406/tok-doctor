@@ -260,8 +260,8 @@ func TestChainBuilder_OpenAIResponsesUnchanged(t *testing.T) {
 		},
 	}
 	got := NewChainBuilder().Build([]Exchange{ex})
-	if len(got.Chains) != 0 || len(got.Uncorrelated) != 0 {
-		t.Fatalf("result = %+v, want ignored", got)
+	if len(got.Uncorrelated) != 1 {
+		t.Fatalf("result = %+v, want uncorrelated", got)
 	}
 }
 

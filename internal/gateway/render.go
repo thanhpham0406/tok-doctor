@@ -62,6 +62,14 @@ func RenderInspect(w io.Writer, s RequestSummary) error {
 	if err := renderAttributedTotal(w, s.Attributed.Value); err != nil {
 		return err
 	}
+	if s.Provider != nil {
+		if err := renderProviderUsage(w, s.Provider); err != nil {
+			return err
+		}
+		if err := renderAttribution(w, s.Attributed.Value, s.Provider); err != nil {
+			return err
+		}
+	}
 	if len(s.Files) > 0 {
 		if err := renderFileTable(w, s.Files); err != nil {
 			return err
@@ -75,7 +83,7 @@ func RenderChains(w io.Writer, chains []ChainSummary) error {
 		_, err := fmt.Fprintln(w, "No correlated gateway chains for this profile.")
 		return err
 	}
-	header := fmt.Sprintf("%-18s  %-8s  %5s  %15s  %12s  %s", "Chain", "Start", "Calls", "Total Context", "Peak Context", "Model")
+	header := fmt.Sprintf("%-18s  %-8s  %5s  %15s  %12s  %10s  %s", "Chain", "Start", "Calls", "Total Context", "Peak Context", "Coverage", "Model")
 	if _, err := fmt.Fprintln(w, header); err != nil {
 		return err
 	}
@@ -83,18 +91,26 @@ func RenderChains(w io.Writer, chains []ChainSummary) error {
 		return err
 	}
 	for _, chain := range chains {
-		if _, err := fmt.Fprintf(w, "%-18s  %-8s  %5d  %15s  %12s  %s\n",
+		if _, err := fmt.Fprintf(w, "%-18s  %-8s  %5d  %15s  %12s  %10s  %s\n",
 			chain.ID,
 			formatTime(chain.StartedAt),
 			chain.ModelCalls,
 			formatMeasurement(chain.TotalContextSent),
 			formatMeasurement(chain.PeakContext),
+			formatChainListCoverage(chain),
 			truncateString(chain.Model, 32),
 		); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func formatChainListCoverage(chain ChainSummary) string {
+	if chain.AttributionCoverage == nil || chain.AttributionCoverage.Percent == nil {
+		return "—"
+	}
+	return formatCoverage(chain.AttributionCoverage, chain.TotalContextSent.Kind)
 }
 
 func RenderChain(w io.Writer, chain ChainSummary) error {
@@ -136,6 +152,11 @@ func RenderChain(w io.Writer, chain ChainSummary) error {
 			return err
 		}
 	}
+	if hasAnyCallProviderUsage(chain.Calls) {
+		if err := renderChainProviderUsageTable(w, chain.Calls); err != nil {
+			return err
+		}
+	}
 	if _, err := fmt.Fprintln(w); err != nil {
 		return err
 	}
@@ -161,7 +182,123 @@ func RenderChain(w io.Writer, chain ChainSummary) error {
 			return err
 		}
 	}
+	if hasChainProviderAggregate(chain) {
+		if err := renderChainProviderSummary(w, chain); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func hasAnyCallProviderUsage(calls []ChainCallSummary) bool {
+	for _, c := range calls {
+		if c.ProviderUsage != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func hasChainProviderAggregate(chain ChainSummary) bool {
+	return chain.ProviderInput != nil || chain.ProviderOutput != nil || chain.ProviderCachedInput != nil || chain.AttributionCoverage != nil
+}
+
+func renderChainProviderUsageTable(w io.Writer, calls []ChainCallSummary) error {
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Provider usage"); err != nil {
+		return err
+	}
+	header := fmt.Sprintf("%-3s  %10s  %10s  %10s  %10s  %10s", "#", "Input", "Cached", "Fresh", "Output", "Coverage")
+	if _, err := fmt.Fprintln(w, header); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, strings.Repeat("-", len(header))); err != nil {
+		return err
+	}
+	for _, call := range calls {
+		if call.ProviderUsage == nil {
+			if _, err := fmt.Fprintf(w, "%-3d  %10s  %10s  %10s  %10s  %10s\n",
+				call.Index, "—", "—", "—", "—", "—"); err != nil {
+				return err
+			}
+			continue
+		}
+		coverageStr := "—"
+		if call.AttributionCoverage != nil {
+			coverageStr = formatCoverage(call.AttributionCoverage, call.Context.Kind)
+		}
+		if _, err := fmt.Fprintf(w, "%-3d  %10s  %10s  %10s  %10s  %10s\n",
+			call.Index,
+			providerInt64OrDash(call.ProviderUsage.Input),
+			providerInt64OrDash(call.ProviderUsage.CachedInput),
+			providerInt64OrDash(call.ProviderUsage.FreshInput),
+			providerInt64OrDash(call.ProviderUsage.Output),
+			coverageStr,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func providerInt64OrDash(p *int64) string {
+	if p == nil {
+		return "—"
+	}
+	return formatInt(*p)
+}
+
+func renderChainProviderSummary(w io.Writer, chain ChainSummary) error {
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	rows := []struct {
+		label string
+		value string
+	}{
+		{"Provider input", formatOptionalMeasurement(chain.ProviderInput)},
+		{"Cached input", formatOptionalMeasurement(chain.ProviderCachedInput)},
+		{"Fresh input", formatOptionalMeasurement(chain.ProviderFreshInput)},
+		{"Output", formatOptionalMeasurement(chain.ProviderOutput)},
+	}
+	for _, row := range rows {
+		if _, err := fmt.Fprintf(w, "%-22s%12s\n", row.label, row.value); err != nil {
+			return err
+		}
+	}
+	if chain.UsageObservedCalls != nil && chain.UsageTotalCalls != nil {
+		label := fmt.Sprintf("Usage observed calls  %d/%d", *chain.UsageObservedCalls, *chain.UsageTotalCalls)
+		if _, err := fmt.Fprintln(w, label); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if chain.AttributionGap != nil {
+		if _, err := fmt.Fprintf(w, "Attributed context  %s\n", formatMeasurement(chain.TotalContextSent)); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "Attribution gap      %s\n", formatDelta(*chain.AttributionGap)); err != nil {
+			return err
+		}
+	}
+	if chain.AttributionCoverage != nil {
+		coverageStr := formatCoverage(chain.AttributionCoverage, chain.TotalContextSent.Kind)
+		if _, err := fmt.Fprintf(w, "Coverage             %s\n", coverageStr); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func formatOptionalMeasurement(m *model.Measurement) string {
+	if m == nil {
+		return "—"
+	}
+	return formatMeasurement(*m)
 }
 
 func renderCategoryTable(w io.Writer, c CategoryBreakdown) error {
@@ -212,6 +349,83 @@ func renderFileTable(w io.Writer, files []FileAttribution) error {
 		}
 	}
 	return nil
+}
+
+func renderProviderUsage(w io.Writer, p *RequestProviderSummary) error {
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Provider usage"); err != nil {
+		return err
+	}
+	rows := []struct {
+		label string
+		value string
+	}{
+		{"Input", providerTokenLabel(p.Input)},
+		{"Cached", providerTokenLabel(p.CachedInput)},
+		{"Fresh", providerTokenLabel(p.FreshInput)},
+		{"Output", providerTokenLabel(p.Output)},
+		{"Reasoning", providerTokenLabel(p.ReasoningOutput)},
+	}
+	for _, row := range rows {
+		if _, err := fmt.Fprintf(w, "%-15s%12s\n", row.label, row.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renderAttribution(w io.Writer, attributed model.Measurement, p *RequestProviderSummary) error {
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Attribution"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-15s%12s\n", "Attributed", formatMeasurement(attributed)); err != nil {
+		return err
+	}
+	gapLabel := "Gap"
+	var gapMeasurement model.Measurement
+	if p.Gap != nil {
+		gapMeasurement = *p.Gap
+	} else {
+		gapMeasurement = model.Measurement{Kind: model.MeasurementUnknown}
+	}
+	if _, err := fmt.Fprintf(w, "%-15s%12s\n", gapLabel, formatDelta(gapMeasurement)); err != nil {
+		return err
+	}
+	coverageLabel := "Coverage"
+	if _, err := fmt.Fprintf(w, "%-15s%12s\n", coverageLabel, formatCoverage(p.Coverage, attributed.Kind)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func providerTokenLabel(p *int64) string {
+	if p == nil {
+		return "          —"
+	}
+	return fmt.Sprintf("%10s", formatInt(*p))
+}
+
+func formatCoverage(c *AttributionCoverageValue, attributionKind model.MeasurementKind) string {
+	if c == nil || c.Percent == nil {
+		return "          —"
+	}
+	suffix := ""
+	if c.Kind == "estimated" || attributionKind == model.MeasurementEstimated {
+		suffix = "*"
+	}
+	return fmt.Sprintf("%9s%%", formatFloat(*c.Percent)) + suffix
+}
+
+func formatFloat(f float64) string {
+	if f == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%.1f", f)
 }
 
 func formatMeasurement(m model.Measurement) string {

@@ -28,16 +28,28 @@ type FileAttribution struct {
 }
 
 type RequestSummary struct {
-	ExchangeID   string            `json:"exchangeId"`
-	Profile      string            `json:"profile,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	StartedAt    string            `json:"startedAt,omitempty"`
-	Endpoint     string            `json:"endpoint,omitempty"`
-	Protocol     Protocol          `json:"protocol,omitempty"`
-	PayloadBytes int64             `json:"payloadBytes"`
-	Categories   CategoryBreakdown `json:"categories"`
-	Attributed   AttributedTotal   `json:"attributed"`
-	Files        []FileAttribution `json:"files,omitempty"`
+	ExchangeID   string                  `json:"exchangeId"`
+	Profile      string                  `json:"profile,omitempty"`
+	Model        string                  `json:"model,omitempty"`
+	StartedAt    string                  `json:"startedAt,omitempty"`
+	Endpoint     string                  `json:"endpoint,omitempty"`
+	Protocol     Protocol                `json:"protocol,omitempty"`
+	PayloadBytes int64                   `json:"payloadBytes"`
+	Categories   CategoryBreakdown       `json:"categories"`
+	Attributed   AttributedTotal         `json:"attributed"`
+	Files        []FileAttribution       `json:"files,omitempty"`
+	Provider     *RequestProviderSummary `json:"provider,omitempty"`
+}
+
+type RequestProviderSummary struct {
+	Input           *int64                    `json:"input,omitempty"`
+	CachedInput     *int64                    `json:"cachedInput,omitempty"`
+	FreshInput      *int64                    `json:"freshInput,omitempty"`
+	Output          *int64                    `json:"output,omitempty"`
+	ReasoningOutput *int64                    `json:"reasoningOutput,omitempty"`
+	Kind            string                    `json:"kind,omitempty"`
+	Gap             *model.Measurement        `json:"gap,omitempty"`
+	Coverage        *AttributionCoverageValue `json:"coverage,omitempty"`
 }
 
 func SummarizeRequest(e Exchange) RequestSummary {
@@ -78,7 +90,48 @@ func SummarizeRequest(e Exchange) RequestSummary {
 
 	summary.Attributed.Value = sumCategoryMeasurements(summary.Categories)
 	summary.Files = aggregateFileAttribution(e.Request.Components)
+	if summary.Provider = buildRequestProviderSummary(e, summary.Attributed.Value); summary.Provider == nil {
+		summary.Provider = nil
+	}
 	return summary
+}
+
+func buildRequestProviderSummary(e Exchange, attributed model.Measurement) *RequestProviderSummary {
+	pu := e.Response.ProviderUsage
+	if pu == nil {
+		return nil
+	}
+	out := &RequestProviderSummary{Kind: "measured"}
+	if pu.Input != nil {
+		v := *pu.Input
+		out.Input = &v
+	}
+	if pu.CachedInput != nil {
+		v := *pu.CachedInput
+		out.CachedInput = &v
+	}
+	if pu.Output != nil {
+		v := *pu.Output
+		out.Output = &v
+	}
+	if pu.ReasoningOutput != nil {
+		v := *pu.ReasoningOutput
+		out.ReasoningOutput = &v
+	}
+	if out.Input != nil && out.CachedInput != nil {
+		fresh := *out.Input - *out.CachedInput
+		out.FreshInput = &fresh
+	}
+	if out.Input == nil && out.CachedInput == nil && out.Output == nil && out.ReasoningOutput == nil {
+		return nil
+	}
+	if out.Input != nil && attributed.Available() {
+		provider := model.NewMeasurement(*out.Input, model.MeasurementMeasured)
+		gap := subtractMetric(provider, attributed)
+		out.Gap = &gap
+		out.Coverage = computeCoverage(attributed, provider, attributed.Kind)
+	}
+	return out
 }
 
 func summaryMeasurement(c model.ContextComponent) model.Measurement {
