@@ -129,6 +129,34 @@ func TestSourceSetAndResetCommand(t *testing.T) {
 	}
 }
 
+func TestGatewayStatusShowsProxyURLWhenStopped(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	t.Setenv("TOKDOCTOR_CONFIG", configPath)
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", filepath.Join(dir, "gateway"))
+	if err := os.WriteFile(configPath, []byte(`
+[gateway.profiles.codex]
+enabled = "true"
+listen = "127.0.0.1:8787"
+protocol = "openai_responses"
+source = "codex"
+upstream = "https://api.openai.com"
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"gateway", "status", "--profile", "codex"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute gateway status: %v", err)
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "http://127.0.0.1:8787") || !strings.Contains(got, "stopped") {
+		t.Fatalf("status output = %q", got)
+	}
+}
+
 func TestUsageCommandMissingSourceFlag(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())

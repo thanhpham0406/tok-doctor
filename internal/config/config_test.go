@@ -87,6 +87,36 @@ upstream = "http://127.0.0.1:20128"
 	}
 }
 
+func TestSavePreservesGatewayProfiles(t *testing.T) {
+	store := NewStoreAt(filepath.Join(t.TempDir(), "config.toml"))
+	cfg := Config{
+		Sources: map[string]Source{"codex": {Path: "/tmp/codex"}},
+		Gateway: Gateway{Profiles: map[string]GatewayProfile{
+			"codex": {
+				Enabled:  true,
+				Listen:   "127.0.0.1:8787",
+				Protocol: "openai_responses",
+				Source:   "codex",
+				Upstream: "https://api.openai.com",
+			},
+		}},
+	}
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	profile := got.Gateway.Profiles["codex"]
+	if !profile.Enabled || profile.Listen != "127.0.0.1:8787" || profile.Upstream != "https://api.openai.com" {
+		t.Fatalf("gateway profile lost: %+v", profile)
+	}
+	if got.Sources["codex"].Path != "/tmp/codex" {
+		t.Fatalf("source lost: %+v", got.Sources)
+	}
+}
+
 func TestLoadInvalidSectionIgnored(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")

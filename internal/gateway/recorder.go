@@ -114,6 +114,9 @@ func (r *FileRecorder) pathFor(profile string) string {
 }
 
 func DefaultDir() (string, error) {
+	if dir := os.Getenv("TOKDOCTOR_GATEWAY_DIR"); dir != "" {
+		return dir, nil
+	}
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("find user config dir: %w", err)

@@ -20,8 +20,11 @@ type Runtime struct {
 	states     *stateStore
 	instanceID string
 	servers    map[string]*http.Server
+	controls   map[string]*http.Server
 	listens    map[string]net.Listener
 	started    map[string]time.Time
+	done       chan struct{}
+	doneOnce   sync.Once
 	mu         sync.Mutex
 }
 
@@ -39,8 +42,10 @@ func newRuntimeWithStore(recorder *FileRecorder, states *stateStore) *Runtime {
 		states:     states,
 		instanceID: newInstanceID(),
 		servers:    map[string]*http.Server{},
+		controls:   map[string]*http.Server{},
 		listens:    map[string]net.Listener{},
 		started:    map[string]time.Time{},
+		done:       make(chan struct{}),
 	}
 }
 
@@ -75,33 +80,53 @@ func (r *Runtime) startOne(ctx context.Context, p Profile) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", p.Listen, err)
 	}
+	p.Listen = listener.Addr().String()
+	controlListener, controlToken, err := r.newControlListener(p)
+	if err != nil {
+		_ = listener.Close()
+		return err
+	}
 	server := &http.Server{
 		Handler:           proxy.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+	controlServer := &http.Server{
+		Handler:           r.controlHandler(p, controlToken),
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintf(os.Stderr, "gateway profile %s stopped: %v\n", p.Name, err)
 		}
 	}()
+	go func() {
+		if err := controlServer.Serve(controlListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintf(os.Stderr, "gateway control for %s stopped: %v\n", p.Name, err)
+		}
+	}()
 	startedAt := time.Now()
 	r.mu.Lock()
 	r.servers[p.Name] = server
+	r.controls[p.Name] = controlServer
 	r.listens[p.Name] = listener
 	r.started[p.Name] = startedAt
 	r.mu.Unlock()
 	if r.states != nil {
 		st := RuntimeState{
-			Profile:    p.Name,
-			PID:        os.Getpid(),
-			Listen:     p.Listen,
-			StartedAt:  startedAt,
-			InstanceID: r.instanceID,
+			Profile:      p.Name,
+			PID:          os.Getpid(),
+			Listen:       p.Listen,
+			ControlAddr:  controlListener.Addr().String(),
+			ControlToken: controlToken,
+			StartedAt:    startedAt,
+			InstanceID:   r.instanceID,
 		}
 		if writeErr := r.states.Write(st); writeErr != nil {
 			_ = server.Shutdown(context.Background())
+			_ = controlServer.Shutdown(context.Background())
 			r.mu.Lock()
 			delete(r.servers, p.Name)
+			delete(r.controls, p.Name)
 			delete(r.listens, p.Name)
 			delete(r.started, p.Name)
 			r.mu.Unlock()
@@ -118,8 +143,12 @@ func (r *Runtime) Wait(ctx context.Context) error {
 	if count == 0 {
 		return nil
 	}
-	<-ctx.Done()
-	return ctx.Err()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-r.done:
+		return nil
+	}
 }
 
 func (r *Runtime) Shutdown(ctx context.Context) error {
@@ -138,19 +167,30 @@ func (r *Runtime) shutdown(profiles []Profile) {
 	for _, p := range profiles {
 		r.mu.Lock()
 		server := r.servers[p.Name]
+		control := r.controls[p.Name]
 		r.mu.Unlock()
-		if server == nil {
+		if server == nil && control == nil {
 			continue
 		}
-		_ = server.Shutdown(context.Background())
+		if server != nil {
+			_ = server.Shutdown(context.Background())
+		}
+		if control != nil {
+			_ = control.Shutdown(context.Background())
+		}
 		if r.states != nil {
 			r.states.Remove(p.Name)
 		}
 		r.mu.Lock()
 		delete(r.servers, p.Name)
+		delete(r.controls, p.Name)
 		delete(r.listens, p.Name)
 		delete(r.started, p.Name)
+		remaining := len(r.servers) + len(r.controls)
 		r.mu.Unlock()
+		if remaining == 0 {
+			r.doneOnce.Do(func() { close(r.done) })
+		}
 	}
 }
 
@@ -161,6 +201,7 @@ func (r *Runtime) Status(profiles []Profile) []StatusEntry {
 		entry := StatusEntry{
 			Profile:     p.Name,
 			Listen:      p.Listen,
+			Proxy:       ProxyURL(p.Listen),
 			Protocol:    p.Protocol,
 			Upstream:    p.Upstream,
 			Requests:    summary.Requests,
@@ -168,6 +209,13 @@ func (r *Runtime) Status(profiles []Profile) []StatusEntry {
 			CaptureFile: summary.CaptureFile,
 		}
 		entry.State = r.stateFor(p)
+		if entry.State == "running" && r.states != nil {
+			if st, ok, err := r.states.Read(p.Name); err == nil && ok {
+				entry.PID = st.PID
+				entry.Listen = st.Listen
+				entry.Proxy = ProxyURL(st.Listen)
+			}
+		}
 		out = append(out, entry)
 	}
 	return out
@@ -196,14 +244,10 @@ func (r *Runtime) stateFor(p Profile) string {
 	if err != nil || !ok {
 		return "stopped"
 	}
-	alive := processCheck(st.PID)
-	bound := listenerCheck(st.Listen)
-	if alive && bound {
+	if controlChecker(st) {
 		return "running"
 	}
-	if !alive || !bound {
-		r.states.Remove(p.Name)
-	}
+	r.states.Remove(p.Name)
 	return "stopped"
 }
 
@@ -216,6 +260,8 @@ type StatusEntry struct {
 	LastSeen    time.Time
 	CaptureFile string
 	State       string
+	Proxy       string `json:"proxy,omitempty"`
+	PID         int    `json:"pid,omitempty"`
 }
 
 func RenderTable(w io.Writer, rows []StatusEntry) error {
@@ -254,4 +300,45 @@ func newInstanceID() string {
 		return fmt.Sprintf("tok-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
+}
+
+func (r *Runtime) newControlListener(p Profile) (net.Listener, string, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, "", fmt.Errorf("listen control for %s: %w", p.Name, err)
+	}
+	return listener, newInstanceID() + newInstanceID(), nil
+}
+
+func (r *Runtime) controlHandler(p Profile, token string) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, req *http.Request) {
+		if !validControlRequest(req, token) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		writeControlJSON(w, controlHealth{
+			Profile:    p.Name,
+			PID:        os.Getpid(),
+			Listen:     p.Listen,
+			InstanceID: r.instanceID,
+		})
+	})
+	mux.HandleFunc("/shutdown", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !validControlRequest(req, token) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		go r.shutdown([]Profile{{Name: p.Name}})
+	})
+	return mux
+}
+
+func validControlRequest(req *http.Request, token string) bool {
+	return req.Header.Get("X-TokDoctor-Control-Token") == token
 }

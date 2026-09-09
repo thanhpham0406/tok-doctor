@@ -183,7 +183,7 @@ func (s Store) Save(cfg Config) error {
 		b.WriteString("override_path = ")
 		b.WriteString(quoteString(cfg.Pricing.OverridePath))
 		b.WriteByte('\n')
-		if len(names) > 0 {
+		if len(names) > 0 || len(cfg.Gateway.Profiles) > 0 {
 			b.WriteByte('\n')
 		}
 	}
@@ -205,6 +205,50 @@ func (s Store) Save(cfg Config) error {
 		if src.Endpoint != "" {
 			b.WriteString("endpoint = ")
 			b.WriteString(quoteString(src.Endpoint))
+			b.WriteByte('\n')
+		}
+	}
+
+	profileNames := make([]string, 0, len(cfg.Gateway.Profiles))
+	for name := range cfg.Gateway.Profiles {
+		profileNames = append(profileNames, name)
+	}
+	sort.Strings(profileNames)
+	for i, name := range profileNames {
+		if len(names) > 0 || cfg.Pricing.OverridePath != "" || i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("[gateway.profiles.")
+		b.WriteString(name)
+		b.WriteString("]\n")
+
+		profile := cfg.Gateway.Profiles[name]
+		b.WriteString("enabled = ")
+		b.WriteString(quoteString(fmt.Sprintf("%t", profile.Enabled)))
+		b.WriteByte('\n')
+		if profile.Listen != "" {
+			b.WriteString("listen = ")
+			b.WriteString(quoteString(profile.Listen))
+			b.WriteByte('\n')
+		}
+		if profile.Protocol != "" {
+			b.WriteString("protocol = ")
+			b.WriteString(quoteString(profile.Protocol))
+			b.WriteByte('\n')
+		}
+		if profile.Source != "" {
+			b.WriteString("source = ")
+			b.WriteString(quoteString(profile.Source))
+			b.WriteByte('\n')
+		}
+		if profile.Upstream != "" {
+			b.WriteString("upstream = ")
+			b.WriteString(quoteString(profile.Upstream))
+			b.WriteByte('\n')
+		}
+		if profile.ProviderTag != "" {
+			b.WriteString("provider = ")
+			b.WriteString(quoteString(profile.ProviderTag))
 			b.WriteByte('\n')
 		}
 	}
@@ -239,6 +283,27 @@ func (s Store) ResetSource(name string) error {
 		return err
 	}
 	delete(cfg.Sources, name)
+	return s.Save(cfg)
+}
+
+func (s Store) SetGatewayProfile(name string, profile GatewayProfile) error {
+	cfg, err := s.Load()
+	if err != nil {
+		return err
+	}
+	if cfg.Gateway.Profiles == nil {
+		cfg.Gateway.Profiles = map[string]GatewayProfile{}
+	}
+	cfg.Gateway.Profiles[name] = profile
+	return s.Save(cfg)
+}
+
+func (s Store) RemoveGatewayProfile(name string) error {
+	cfg, err := s.Load()
+	if err != nil {
+		return err
+	}
+	delete(cfg.Gateway.Profiles, name)
 	return s.Save(cfg)
 }
 

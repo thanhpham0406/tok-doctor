@@ -3,6 +3,7 @@ package gateway
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/thanhpham0406/tok-doctor/internal/config"
@@ -33,7 +34,14 @@ func ValidateProfiles(raw map[string]config.GatewayProfile) ProfileSet {
 	seenNames := map[string]struct{}{}
 	seenListen := map[string]struct{}{}
 
-	for name, p := range raw {
+	names := make([]string, 0, len(raw))
+	for name := range raw {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		p := raw[name]
 		if _, dup := seenNames[name]; dup {
 			out.Errors = append(out.Errors, ProfileError{Name: name, Reason: "duplicate profile name"})
 			continue

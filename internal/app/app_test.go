@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/thanhpham0406/tok-doctor/internal/config"
@@ -199,6 +200,108 @@ func TestSessionsFiltersArtifactsWithoutAuthoritativeUsage(t *testing.T) {
 	}
 	if gotIDs["sess-empty"] {
 		t.Fatalf("included no-usage session: %v", gotIDs)
+	}
+}
+
+func TestGatewaySetupCreatesLoopbackCodexProfile(t *testing.T) {
+	store := config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml"))
+	app := NewWithStore(store)
+
+	profile, created, err := app.GatewaySetup(context.Background(), GatewaySetupOptions{Source: "codex"})
+	if err != nil {
+		t.Fatalf("GatewaySetup: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected profile to be created")
+	}
+	if profile.Name != "codex" || profile.Protocol != "openai_responses" || profile.Upstream != "https://api.openai.com" {
+		t.Fatalf("profile = %+v", profile)
+	}
+	if !strings.HasPrefix(profile.Listen, "127.0.0.1:") {
+		t.Fatalf("listen = %q, want loopback", profile.Listen)
+	}
+}
+
+func TestGatewaySetupIsIdempotentAndPreservesCustomUpstream(t *testing.T) {
+	store := config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml"))
+	app := NewWithStore(store)
+	first, created, err := app.GatewaySetup(context.Background(), GatewaySetupOptions{
+		Source:   "codex",
+		Listen:   "127.0.0.1:18888",
+		Upstream: "https://example.test/custom",
+	})
+	if err != nil {
+		t.Fatalf("first GatewaySetup: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected first setup to create")
+	}
+	second, created, err := app.GatewaySetup(context.Background(), GatewaySetupOptions{
+		Source:   "codex",
+		Listen:   "127.0.0.1:19999",
+		Upstream: "https://api.openai.com",
+	})
+	if err != nil {
+		t.Fatalf("second GatewaySetup: %v", err)
+	}
+	if created {
+		t.Fatalf("expected second setup to be idempotent")
+	}
+	if second.Listen != first.Listen || second.Upstream != "https://example.test/custom" {
+		t.Fatalf("existing profile was overwritten: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestGatewaySetupClaudeDoesNotAssumeAnthropicProvider(t *testing.T) {
+	store := config.NewStoreAt(filepath.Join(t.TempDir(), "config.toml"))
+	app := NewWithStore(store)
+
+	profile, _, err := app.GatewaySetup(context.Background(), GatewaySetupOptions{
+		Source:   "claude",
+		Listen:   "127.0.0.1:18889",
+		Upstream: "https://example.test/anthropic-compatible",
+	})
+	if err != nil {
+		t.Fatalf("GatewaySetup: %v", err)
+	}
+	if profile.ProviderTag != "" {
+		t.Fatalf("provider tag = %q, want empty", profile.ProviderTag)
+	}
+}
+
+func TestGatewayRemoveRemovesProfileAndPreservesCaptures(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", filepath.Join(dir, "gateway"))
+	store := config.NewStoreAt(filepath.Join(dir, "config.toml"))
+	app := NewWithStore(store)
+	profile, _, err := app.GatewaySetup(context.Background(), GatewaySetupOptions{
+		Source:   "codex",
+		Listen:   "127.0.0.1:18890",
+		Upstream: "https://api.openai.com",
+	})
+	if err != nil {
+		t.Fatalf("GatewaySetup: %v", err)
+	}
+	capturePath := filepath.Join(dir, "gateway", profile.Name+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(capturePath), 0o700); err != nil {
+		t.Fatalf("mkdir capture dir: %v", err)
+	}
+	if err := os.WriteFile(capturePath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write capture: %v", err)
+	}
+
+	if err := app.GatewayRemove(context.Background(), "codex"); err != nil {
+		t.Fatalf("GatewayRemove: %v", err)
+	}
+	cfg, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := cfg.Gateway.Profiles["codex"]; ok {
+		t.Fatalf("profile still exists")
+	}
+	if _, err := os.Stat(capturePath); err != nil {
+		t.Fatalf("capture should be preserved: %v", err)
 	}
 }
 

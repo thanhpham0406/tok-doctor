@@ -1,10 +1,11 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,11 +13,13 @@ import (
 )
 
 type RuntimeState struct {
-	Profile    string    `json:"profile"`
-	PID        int       `json:"pid"`
-	Listen     string    `json:"listen"`
-	StartedAt  time.Time `json:"startedAt"`
-	InstanceID string    `json:"instanceId"`
+	Profile      string    `json:"profile"`
+	PID          int       `json:"pid"`
+	Listen       string    `json:"listen"`
+	ControlAddr  string    `json:"controlAddr"`
+	ControlToken string    `json:"controlToken"`
+	StartedAt    time.Time `json:"startedAt"`
+	InstanceID   string    `json:"instanceId"`
 }
 
 type stateStore struct {
@@ -29,6 +32,12 @@ func newStateStore(dir string) *stateStore {
 }
 
 func DefaultRuntimeDir() (string, error) {
+	if dir := os.Getenv("TOKDOCTOR_GATEWAY_RUNTIME_DIR"); dir != "" {
+		return dir, nil
+	}
+	if dir := os.Getenv("TOKDOCTOR_GATEWAY_DIR"); dir != "" {
+		return filepath.Join(dir, "runtime"), nil
+	}
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("find user config dir: %w", err)
@@ -46,6 +55,12 @@ func (s *stateStore) Write(st RuntimeState) error {
 	}
 	if st.Listen == "" {
 		return errors.New("runtime state requires listen address")
+	}
+	if st.ControlAddr == "" {
+		return errors.New("runtime state requires control address")
+	}
+	if st.ControlToken == "" {
+		return errors.New("runtime state requires control token")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -104,18 +119,57 @@ func (s *stateStore) Remove(profile string) {
 
 var (
 	processCheck   = func(pid int) bool { return pidAlive(pid) }
-	listenerCheck  = func(addr string) bool { return dialListener(addr) }
-	listenerDialer = &net.Dialer{Timeout: 250 * time.Millisecond}
+	controlChecker = verifyRuntimeState
+	controlClient  = &http.Client{Timeout: 500 * time.Millisecond}
 )
 
-func dialListener(addr string) bool {
-	if addr == "" {
+type controlHealth struct {
+	Profile    string `json:"profile"`
+	PID        int    `json:"pid"`
+	Listen     string `json:"listen"`
+	InstanceID string `json:"instanceId"`
+}
+
+func verifyRuntimeState(st RuntimeState) bool {
+	if st.ControlAddr == "" || st.ControlToken == "" || !processCheck(st.PID) {
 		return false
 	}
-	conn, err := listenerDialer.Dial("tcp", addr)
+	if !IsLoopbackAddress(st.ControlAddr) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+st.ControlAddr+"/health", nil)
 	if err != nil {
 		return false
 	}
-	_ = conn.Close()
-	return true
+	req.Header.Set("X-TokDoctor-Control-Token", st.ControlToken)
+	resp, err := controlClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var health controlHealth
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		return false
+	}
+	return health.Profile == st.Profile &&
+		health.PID == st.PID &&
+		health.Listen == st.Listen &&
+		health.InstanceID == st.InstanceID
+}
+
+func writeControlJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func ProxyURL(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	return "http://" + addr
 }

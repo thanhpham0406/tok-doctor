@@ -19,11 +19,13 @@ func TestStateStore_WriteIsAtomicAndRestrictive(t *testing.T) {
 	dir := t.TempDir()
 	store := newStateStore(dir)
 	st := RuntimeState{
-		Profile:    "alpha",
-		PID:        os.Getpid(),
-		Listen:     "127.0.0.1:9999",
-		StartedAt:  time.Now(),
-		InstanceID: "abc123",
+		Profile:      "alpha",
+		PID:          os.Getpid(),
+		Listen:       "127.0.0.1:9999",
+		ControlAddr:  "127.0.0.1:9998",
+		ControlToken: "token",
+		StartedAt:    time.Now(),
+		InstanceID:   "abc123",
 	}
 	if err := store.Write(st); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -51,11 +53,17 @@ func TestStateStore_WriteIsAtomicAndRestrictive(t *testing.T) {
 func TestStateStore_WriteValidatesFields(t *testing.T) {
 	dir := t.TempDir()
 	store := newStateStore(dir)
-	if err := store.Write(RuntimeState{Profile: "", Listen: "127.0.0.1:1"}); err == nil {
+	if err := store.Write(RuntimeState{Profile: "", Listen: "127.0.0.1:1", ControlAddr: "127.0.0.1:2", ControlToken: "token"}); err == nil {
 		t.Fatalf("expected profile required")
 	}
-	if err := store.Write(RuntimeState{Profile: "x", Listen: ""}); err == nil {
+	if err := store.Write(RuntimeState{Profile: "x", Listen: "", ControlAddr: "127.0.0.1:2", ControlToken: "token"}); err == nil {
 		t.Fatalf("expected listen required")
+	}
+	if err := store.Write(RuntimeState{Profile: "x", Listen: "127.0.0.1:1", ControlAddr: "", ControlToken: "token"}); err == nil {
+		t.Fatalf("expected control address required")
+	}
+	if err := store.Write(RuntimeState{Profile: "x", Listen: "127.0.0.1:1", ControlAddr: "127.0.0.1:2", ControlToken: ""}); err == nil {
+		t.Fatalf("expected control token required")
 	}
 }
 
@@ -87,12 +95,17 @@ func (s *stubListener) check(addr string) bool {
 
 func withStubCheckers(t *testing.T, proc *stubProcess, lst *stubListener) {
 	t.Helper()
-	origProc, origLst := processCheck, listenerCheck
+	origProc, origControl := processCheck, controlChecker
 	processCheck = func(pid int) bool { return proc.check(pid) }
-	listenerCheck = func(addr string) bool { return lst.check(addr) }
+	controlChecker = func(st RuntimeState) bool {
+		if !proc.check(st.PID) {
+			return false
+		}
+		return lst.check(st.Listen)
+	}
 	t.Cleanup(func() {
 		processCheck = origProc
-		listenerCheck = origLst
+		controlChecker = origControl
 	})
 }
 
@@ -215,11 +228,13 @@ func TestStatus_StoppedWhenPIDDead(t *testing.T) {
 	sharedDir := t.TempDir()
 	store := newStateStore(sharedDir)
 	if err := store.Write(RuntimeState{
-		Profile:    "alpha",
-		PID:        os.Getpid(),
-		Listen:     listen,
-		StartedAt:  time.Now(),
-		InstanceID: "x",
+		Profile:      "alpha",
+		PID:          os.Getpid(),
+		Listen:       listen,
+		ControlAddr:  "127.0.0.1:1",
+		ControlToken: "token",
+		StartedAt:    time.Now(),
+		InstanceID:   "x",
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -245,11 +260,13 @@ func TestStatus_StoppedWhenListenerMissing(t *testing.T) {
 	sharedDir := t.TempDir()
 	store := newStateStore(sharedDir)
 	if err := store.Write(RuntimeState{
-		Profile:    "alpha",
-		PID:        os.Getpid(),
-		Listen:     listen,
-		StartedAt:  time.Now(),
-		InstanceID: "x",
+		Profile:      "alpha",
+		PID:          os.Getpid(),
+		Listen:       listen,
+		ControlAddr:  "127.0.0.1:1",
+		ControlToken: "token",
+		StartedAt:    time.Now(),
+		InstanceID:   "x",
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -301,11 +318,13 @@ func TestStatus_RestartReplacesStaleState(t *testing.T) {
 	sharedDir := t.TempDir()
 	store := newStateStore(sharedDir)
 	if err := store.Write(RuntimeState{
-		Profile:    "alpha",
-		PID:        999999,
-		Listen:     listen,
-		StartedAt:  time.Now().Add(-time.Hour),
-		InstanceID: "stale",
+		Profile:      "alpha",
+		PID:          999999,
+		Listen:       listen,
+		ControlAddr:  "127.0.0.1:1",
+		ControlToken: "token",
+		StartedAt:    time.Now().Add(-time.Hour),
+		InstanceID:   "stale",
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -499,5 +518,67 @@ func TestRuntime_StartFailsCleanlyIfStatePersistFails(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 		t.Fatalf("listener not released: %v", err)
+	}
+}
+
+func TestManager_DuplicateStartDoesNotLaunchAnotherDaemon(t *testing.T) {
+	store := newStateStore(t.TempDir())
+	st := RuntimeState{
+		Profile:      "alpha",
+		PID:          1234,
+		Listen:       "127.0.0.1:8787",
+		ControlAddr:  "127.0.0.1:8788",
+		ControlToken: "token",
+		StartedAt:    time.Now(),
+		InstanceID:   "instance",
+	}
+	if err := store.Write(st); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	orig := controlChecker
+	controlChecker = func(got RuntimeState) bool {
+		return got.Profile == st.Profile && got.InstanceID == st.InstanceID
+	}
+	t.Cleanup(func() { controlChecker = orig })
+
+	manager := &Manager{Store: store, LogDir: t.TempDir(), Timeout: time.Second}
+	results, err := manager.Start(context.Background(), []Profile{profileForListen("alpha", st.Listen, "http://127.0.0.1:1")})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(results) != 1 || !results[0].AlreadyRunning || results[0].PID != st.PID {
+		t.Fatalf("results = %+v", results)
+	}
+}
+
+func TestManager_StopFromDifferentRuntime(t *testing.T) {
+	listen, _ := freeLoopback(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	store := newStateStore(t.TempDir())
+	rec, _ := NewFileRecorder(t.TempDir())
+	defer func() { _ = rec.Close() }()
+	rt := newRuntimeWithStore(rec, store)
+	profile := profileForListen("alpha", listen, upstream.URL)
+	if err := rt.Start(context.Background(), []Profile{profile}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	manager := &Manager{Store: store, LogDir: t.TempDir(), Timeout: 2 * time.Second}
+	rows, err := manager.Stop(context.Background(), []Profile{profile})
+	if err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(rows) != 1 || rows[0].State != "stopped" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if _, ok, _ := store.Read("alpha"); ok {
+		t.Fatalf("expected runtime state removed")
+	}
+	if verifyRuntimeState(RuntimeState{Profile: "alpha", PID: os.Getpid(), Listen: listen}) {
+		t.Fatalf("expected control endpoint to be stopped")
 	}
 }

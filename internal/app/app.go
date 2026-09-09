@@ -414,10 +414,10 @@ func normalizeName(name string) string {
 	return strings.ToLower(name)
 }
 
-func (a *App) GatewayStart(ctx context.Context, profileName string) (*gateway.Runtime, gateway.ProfileSet, error) {
+func (a *App) GatewayStart(ctx context.Context, profileName string) ([]gateway.StartResult, error) {
 	cfg, err := a.config.Load()
 	if err != nil {
-		return nil, gateway.ProfileSet{}, err
+		return nil, err
 	}
 	set := gateway.ValidateProfiles(cfg.Gateway.Profiles).FilterByName(profileName)
 	if len(set.Errors) > 0 {
@@ -425,22 +425,50 @@ func (a *App) GatewayStart(ctx context.Context, profileName string) (*gateway.Ru
 		for _, e := range set.Errors {
 			errs = append(errs, fmt.Sprintf("%s: %s", e.Name, e.Reason))
 		}
-		return nil, set, errors.New(strings.Join(errs, "; "))
+		return nil, errors.New(strings.Join(errs, "; "))
+	}
+	manager, err := gateway.NewManager()
+	if err != nil {
+		return nil, err
+	}
+	return manager.Start(ctx, set.Profiles)
+}
+
+func (a *App) GatewayServe(ctx context.Context, profileName string) error {
+	if profileName == "" {
+		return errors.New("profile is required")
+	}
+	cfg, err := a.config.Load()
+	if err != nil {
+		return err
+	}
+	set := gateway.ValidateProfiles(cfg.Gateway.Profiles).FilterByName(profileName)
+	if len(set.Errors) > 0 {
+		errs := make([]string, 0, len(set.Errors))
+		for _, e := range set.Errors {
+			errs = append(errs, fmt.Sprintf("%s: %s", e.Name, e.Reason))
+		}
+		return errors.New(strings.Join(errs, "; "))
 	}
 	dir, err := gateway.DefaultDir()
 	if err != nil {
-		return nil, set, err
+		return err
 	}
 	recorder, err := gateway.NewFileRecorder(dir)
 	if err != nil {
-		return nil, set, err
+		return err
 	}
 	rt := gateway.NewRuntime(recorder)
 	if err := rt.Start(ctx, set.Profiles); err != nil {
 		_ = recorder.Close()
-		return nil, set, err
+		return err
 	}
-	return rt, set, nil
+	defer func() { _ = recorder.Close() }()
+	defer func() { _ = rt.Shutdown(context.Background()) }()
+	if err := rt.Wait(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	return nil
 }
 
 func (a *App) GatewayStatus(profileName string) ([]gateway.StatusEntry, error) {
@@ -449,6 +477,13 @@ func (a *App) GatewayStatus(profileName string) ([]gateway.StatusEntry, error) {
 		return nil, err
 	}
 	set := gateway.ValidateProfiles(cfg.Gateway.Profiles).FilterByName(profileName)
+	if len(set.Errors) > 0 {
+		errs := make([]string, 0, len(set.Errors))
+		for _, e := range set.Errors {
+			errs = append(errs, fmt.Sprintf("%s: %s", e.Name, e.Reason))
+		}
+		return nil, errors.New(strings.Join(errs, "; "))
+	}
 	dir, err := gateway.DefaultDir()
 	if err != nil {
 		return nil, err
@@ -460,4 +495,158 @@ func (a *App) GatewayStatus(profileName string) ([]gateway.StatusEntry, error) {
 	defer func() { _ = recorder.Close() }()
 	rt := gateway.NewRuntime(recorder)
 	return rt.Status(set.Profiles), nil
+}
+
+func (a *App) GatewayStop(ctx context.Context, profileName string) ([]gateway.StatusEntry, error) {
+	cfg, err := a.config.Load()
+	if err != nil {
+		return nil, err
+	}
+	set := gateway.ValidateProfiles(cfg.Gateway.Profiles).FilterByName(profileName)
+	if len(set.Errors) > 0 {
+		errs := make([]string, 0, len(set.Errors))
+		for _, e := range set.Errors {
+			errs = append(errs, fmt.Sprintf("%s: %s", e.Name, e.Reason))
+		}
+		return nil, errors.New(strings.Join(errs, "; "))
+	}
+	manager, err := gateway.NewManager()
+	if err != nil {
+		return nil, err
+	}
+	return manager.Stop(ctx, set.Profiles)
+}
+
+type GatewaySetupOptions struct {
+	Source   string
+	Listen   string
+	Protocol string
+	Upstream string
+	Provider string
+}
+
+func (a *App) GatewaySetup(ctx context.Context, opts GatewaySetupOptions) (gateway.Profile, bool, error) {
+	sourceName := normalizeName(opts.Source)
+	if sourceName == "" {
+		sourceName = "codex"
+	}
+	if !a.sources.ValidateName(sourceName) {
+		return gateway.Profile{}, false, fmt.Errorf("unknown source %q", sourceName)
+	}
+	cfg, err := a.config.Load()
+	if err != nil {
+		return gateway.Profile{}, false, err
+	}
+	if existing, ok := cfg.Gateway.Profiles[sourceName]; ok {
+		profile := gateway.Profile{
+			Name:        sourceName,
+			Enabled:     existing.Enabled,
+			Listen:      existing.Listen,
+			Protocol:    existing.Protocol,
+			Source:      existing.Source,
+			Upstream:    existing.Upstream,
+			ProviderTag: existing.ProviderTag,
+		}
+		return profile, false, nil
+	}
+	protocol := strings.TrimSpace(opts.Protocol)
+	if protocol == "" {
+		protocol = defaultGatewayProtocol(sourceName)
+	}
+	if protocol == "" {
+		return gateway.Profile{}, false, fmt.Errorf("gateway setup for %s requires --protocol", sourceName)
+	}
+	upstream := strings.TrimSpace(opts.Upstream)
+	if upstream == "" {
+		upstream = cfg.Sources[sourceName].Endpoint
+	}
+	if upstream == "" {
+		upstream = defaultGatewayUpstream(sourceName, protocol)
+	}
+	if upstream == "" {
+		return gateway.Profile{}, false, fmt.Errorf("gateway setup for %s requires --upstream", sourceName)
+	}
+	listen := strings.TrimSpace(opts.Listen)
+	if listen == "" {
+		listen, err = gateway.FreeLoopbackAddress()
+		if err != nil {
+			return gateway.Profile{}, false, err
+		}
+	}
+	raw := config.GatewayProfile{
+		Enabled:     true,
+		Listen:      listen,
+		Protocol:    protocol,
+		Source:      sourceName,
+		Upstream:    upstream,
+		ProviderTag: strings.TrimSpace(opts.Provider),
+	}
+	if cfg.Gateway.Profiles == nil {
+		cfg.Gateway.Profiles = map[string]config.GatewayProfile{}
+	}
+	cfg.Gateway.Profiles[sourceName] = raw
+	set := gateway.ValidateProfiles(cfg.Gateway.Profiles)
+	if len(set.Errors) > 0 {
+		return gateway.Profile{}, false, fmt.Errorf("%s: %s", set.Errors[0].Name, set.Errors[0].Reason)
+	}
+	if err := a.config.SetGatewayProfile(sourceName, raw); err != nil {
+		return gateway.Profile{}, false, err
+	}
+	for _, profile := range set.Profiles {
+		if profile.Name == sourceName {
+			return profile, true, nil
+		}
+	}
+	return gateway.Profile{}, false, fmt.Errorf("gateway profile %s was not created", sourceName)
+}
+
+func (a *App) GatewayRemove(ctx context.Context, profileName string) error {
+	if profileName == "" {
+		return errors.New("profile is required")
+	}
+	cfg, err := a.config.Load()
+	if err != nil {
+		return err
+	}
+	manager, err := gateway.NewManager()
+	if err != nil {
+		return err
+	}
+	if raw, ok := cfg.Gateway.Profiles[profileName]; ok {
+		profile := gateway.Profile{
+			Name:        profileName,
+			Enabled:     raw.Enabled,
+			Listen:      raw.Listen,
+			Protocol:    raw.Protocol,
+			Source:      raw.Source,
+			Upstream:    raw.Upstream,
+			ProviderTag: raw.ProviderTag,
+		}
+		if _, err := manager.Stop(ctx, []gateway.Profile{profile}); err != nil {
+			return err
+		}
+	}
+	if err := a.config.RemoveGatewayProfile(profileName); err != nil {
+		return err
+	}
+	manager.Store.Remove(profileName)
+	return nil
+}
+
+func defaultGatewayProtocol(sourceName string) string {
+	switch sourceName {
+	case "codex":
+		return "openai_responses"
+	case "claude":
+		return "anthropic_messages"
+	default:
+		return ""
+	}
+}
+
+func defaultGatewayUpstream(sourceName, protocol string) string {
+	if sourceName == "codex" && protocol == "openai_responses" {
+		return "https://api.openai.com"
+	}
+	return ""
 }

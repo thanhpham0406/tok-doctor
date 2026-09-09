@@ -22,6 +22,10 @@ func newGatewayCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 	}
 	cmd.AddCommand(newGatewayStartCommand(ctx, stdout, tok))
 	cmd.AddCommand(newGatewayStatusCommand(stdout, tok))
+	cmd.AddCommand(newGatewayStopCommand(ctx, stdout, tok))
+	cmd.AddCommand(newGatewaySetupCommand(ctx, stdout, tok))
+	cmd.AddCommand(newGatewayRemoveCommand(ctx, stdout, tok))
+	cmd.AddCommand(newGatewayServeCommand(ctx, tok))
 	return cmd
 }
 
@@ -31,23 +35,11 @@ func newGatewayStartCommand(ctx context.Context, stdout io.Writer, tok *app.App)
 		Use:   "start",
 		Short: "Start one or all enabled gateway profiles",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rt, set, err := tok.GatewayStart(cmd.Context(), profileName)
+			results, err := tok.GatewayStart(cmd.Context(), profileName)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = rt.Shutdown(context.Background()) }()
-
-			if err := printGatewayStartup(stdout, set.Profiles); err != nil {
-				return err
-			}
-
-			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-			defer cancel()
-
-			if err := rt.Wait(ctx); err != nil && err != context.Canceled {
-				return err
-			}
-			return nil
+			return printGatewayStarted(stdout, results)
 		},
 	}
 	cmd.Flags().StringVar(&profileName, "profile", "", "start only the named profile")
@@ -56,6 +48,7 @@ func newGatewayStartCommand(ctx context.Context, stdout io.Writer, tok *app.App)
 
 func newGatewayStatusCommand(stdout io.Writer, tok *app.App) *cobra.Command {
 	var profileName string
+	var format string
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show the status of gateway profiles",
@@ -65,10 +58,16 @@ func newGatewayStatusCommand(stdout io.Writer, tok *app.App) *cobra.Command {
 				return err
 			}
 			sort.SliceStable(rows, func(i, j int) bool { return rows[i].Profile < rows[j].Profile })
-			if _, err := fmt.Fprintln(stdout, "Profile          Requests   Last request   State"); err != nil {
+			if format == "json" {
+				return writeJSON(stdout, rows)
+			}
+			if format != "terminal" {
+				return fmt.Errorf("unsupported format %q", format)
+			}
+			if _, err := fmt.Fprintln(stdout, "Profile          State    Proxy                    Requests   Last request"); err != nil {
 				return err
 			}
-			if _, err := fmt.Fprintln(stdout, "---------------  ---------  -------------  -------"); err != nil {
+			if _, err := fmt.Fprintln(stdout, "---------------  -------  -----------------------  ---------  -------------"); err != nil {
 				return err
 			}
 			for _, row := range rows {
@@ -76,11 +75,12 @@ func newGatewayStatusCommand(stdout io.Writer, tok *app.App) *cobra.Command {
 				if !row.LastSeen.IsZero() {
 					last = humaniseRelative(time.Since(row.LastSeen))
 				}
-				if _, err := fmt.Fprintf(stdout, "%-15s  %9d  %-13s  %s\n",
+				if _, err := fmt.Fprintf(stdout, "%-15s  %-7s  %-23s  %9d  %-13s\n",
 					truncate(row.Profile, 15),
+					row.State,
+					truncate(row.Proxy, 23),
 					row.Requests,
 					last,
-					row.State,
 				); err != nil {
 					return err
 				}
@@ -89,31 +89,138 @@ func newGatewayStatusCommand(stdout io.Writer, tok *app.App) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&profileName, "profile", "", "show status for only the named profile")
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
 	return cmd
 }
 
-func printGatewayStartup(w io.Writer, profiles []gateway.Profile) error {
-	if _, err := fmt.Fprintln(w, "TokDoctor Gateway"); err != nil {
-		return err
+func newGatewayStopCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
+	var profileName string
+	cmd := &cobra.Command{
+		Use:   "stop",
+		Short: "Stop one or all running gateway profiles",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rows, err := tok.GatewayStop(cmd.Context(), profileName)
+			if err != nil {
+				return err
+			}
+			for _, row := range rows {
+				if _, err := fmt.Fprintf(stdout, "Gateway stopped: %s\n", row.Profile); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 	}
-	if _, err := fmt.Fprintln(w); err != nil {
-		return err
+	cmd.Flags().StringVar(&profileName, "profile", "", "stop only the named profile")
+	return cmd
+}
+
+func newGatewaySetupCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
+	var opts app.GatewaySetupOptions
+	cmd := &cobra.Command{
+		Use:   "setup",
+		Short: "Create a local gateway profile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profile, created, err := tok.GatewaySetup(cmd.Context(), opts)
+			if err != nil {
+				return err
+			}
+			if created {
+				_, err = fmt.Fprintf(stdout, "Gateway profile created\n\nProfile    %s\nProxy      %s\nUpstream   %s\n", profile.Name, gateway.ProxyURL(profile.Listen), profile.Upstream)
+			} else {
+				_, err = fmt.Fprintf(stdout, "Gateway profile already exists\n\nProfile    %s\nProxy      %s\nUpstream   %s\n", profile.Name, gateway.ProxyURL(profile.Listen), profile.Upstream)
+			}
+			return err
+		},
 	}
-	if _, err := fmt.Fprintln(w, "Profile          Listen           Protocol             Upstream"); err != nil {
-		return err
+	cmd.Flags().StringVar(&opts.Source, "source", "", "source name for the gateway profile")
+	cmd.Flags().StringVar(&opts.Listen, "listen", "", "loopback listen address")
+	cmd.Flags().StringVar(&opts.Protocol, "protocol", "", "gateway protocol")
+	cmd.Flags().StringVar(&opts.Upstream, "upstream", "", "upstream API base URL")
+	cmd.Flags().StringVar(&opts.Provider, "provider", "", "provider tag for reporting")
+	return cmd
+}
+
+func newGatewayRemoveCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "remove <profile>",
+		Short: "Remove a gateway profile",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := tok.GatewayRemove(cmd.Context(), args[0]); err != nil {
+				return err
+			}
+			_, err := fmt.Fprintf(stdout, "Gateway profile removed: %s\n", args[0])
+			return err
+		},
 	}
-	for _, p := range profiles {
-		if _, err := fmt.Fprintf(w, "%-15s  %-15s  %-20s %s\n",
-			truncate(p.Name, 15),
-			truncate(p.Listen, 15),
-			truncate(p.Protocol, 20),
-			truncate(p.Upstream, 60),
-		); err != nil {
+	return cmd
+}
+
+func newGatewayServeCommand(ctx context.Context, tok *app.App) *cobra.Command {
+	var profileName string
+	cmd := &cobra.Command{
+		Use:    "_serve",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runCtx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
+			return tok.GatewayServe(runCtx, profileName)
+		},
+	}
+	cmd.Flags().StringVar(&profileName, "profile", "", "serve the named profile")
+	return cmd
+}
+
+func printGatewayStarted(w io.Writer, results []gateway.StartResult) error {
+	for i, result := range results {
+		if i > 0 {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+		if result.AlreadyRunning {
+			if _, err := fmt.Fprintln(w, "Gateway already running"); err != nil {
+				return err
+			}
+		} else if _, err := fmt.Fprintln(w, "Gateway started"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "Profile    %s\n", result.Profile); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "Listen     %s\n", result.Listen); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "Proxy      %s\n", result.Proxy); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "PID        %d\n", result.PID); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "Check status:"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "  tok gateway status --profile %s\n", result.Profile); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "Stop:"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "  tok gateway stop --profile %s\n", result.Profile); err != nil {
 			return err
 		}
 	}
-	_, err := fmt.Fprintln(w)
-	return err
+	return nil
 }
 
 func truncate(s string, n int) string {
