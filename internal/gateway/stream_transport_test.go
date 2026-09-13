@@ -116,11 +116,11 @@ func TestStreamObserver_ValidTerminalUsage(t *testing.T) {
 	original := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"usage\":{\"input_tokens\":111,\"output_tokens\":22,\"input_tokens_details\":{\"cached_tokens\":80},\"output_tokens_details\":{\"reasoning_tokens\":5}}}\n\n")
 	streamer, _ := readStreamAndCapture(t, bytes.NewReader(original), 4096)
 	usage := streamer.Usage()
-	if usage == nil || usage.Input == nil || *usage.Input != 111 {
+	if usage == nil || usage.InputTokens == nil || *usage.InputTokens != 111 {
 		t.Fatalf("usage = %+v", usage)
 	}
-	if usage.Output == nil || *usage.Output != 22 {
-		t.Fatalf("output = %+v", usage.Output)
+	if usage.OutputTokens == nil || *usage.OutputTokens != 22 {
+		t.Fatalf("output = %+v", usage.OutputTokens)
 	}
 }
 
@@ -135,7 +135,7 @@ func TestStreamObserver_DelimiterSplitAcrossChunks(t *testing.T) {
 		t.Fatalf("delimiter-split chunks altered bytes\nwant=%q\ngot =%q", original, got)
 	}
 	usage := streamer.Usage()
-	if usage == nil || usage.Input == nil || *usage.Input != 7 {
+	if usage == nil || usage.InputTokens == nil || *usage.InputTokens != 7 {
 		t.Fatalf("usage after split = %+v", usage)
 	}
 }
@@ -149,10 +149,10 @@ func TestStreamObserver_JsonSplitAcrossManyChunks(t *testing.T) {
 	upstream := &splitReader{chunks: chunks}
 	streamer, _ := readStreamAndCapture(t, upstream, 4096)
 	usage := streamer.Usage()
-	if usage == nil || usage.Input == nil || *usage.Input != 11 {
+	if usage == nil || usage.InputTokens == nil || *usage.InputTokens != 11 {
 		t.Fatalf("usage missing after JSON split: %+v", usage)
 	}
-	if usage.Output == nil || *usage.Output != 22 {
+	if usage.OutputTokens == nil || *usage.OutputTokens != 22 {
 		t.Fatalf("output wrong after split: %+v", usage)
 	}
 }
@@ -165,7 +165,7 @@ func TestStreamObserver_MultipleEventsOneRead(t *testing.T) {
 	upstream := &splitReader{chunks: [][]byte{original}}
 	streamer, _ := readStreamAndCapture(t, upstream, 64*1024)
 	usage := streamer.Usage()
-	if usage == nil || usage.Input == nil || *usage.Input != 3 {
+	if usage == nil || usage.InputTokens == nil || *usage.InputTokens != 3 {
 		t.Fatalf("usage from multi-event read = %+v", usage)
 	}
 }
@@ -205,7 +205,7 @@ func TestStreamObserver_CloseBeforeEOFIsIdempotent(t *testing.T) {
 	if len(persisted) != 1 {
 		t.Fatalf("recorded %d exchanges, want 1", len(persisted))
 	}
-	if persisted[0].Response.ProviderUsage == nil || persisted[0].Response.ProviderUsage.Input == nil || *persisted[0].Response.ProviderUsage.Input != 1 {
+	if persisted[0].Response.ProviderUsage == nil || persisted[0].Response.ProviderUsage.InputTokens == nil || *persisted[0].Response.ProviderUsage.InputTokens != 1 {
 		t.Fatalf("usage missing after close: %+v", persisted[0])
 	}
 }

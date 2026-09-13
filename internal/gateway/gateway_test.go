@@ -622,10 +622,11 @@ type recordingRecorder struct {
 	received []Exchange
 }
 
-func (r *recordingRecorder) Record(e Exchange) {
+func (r *recordingRecorder) Record(e Exchange) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.received = append(r.received, e)
+	return nil
 }
 
 func (r *recordingRecorder) Summary(string) (Summary, error) { return Summary{}, nil }

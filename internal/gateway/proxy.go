@@ -15,6 +15,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/thanhpham0406/tok-doctor/internal/model"
@@ -30,8 +31,7 @@ type Proxy struct {
 	Observer   Observer
 	Recorder   Recorder
 	HTTPClient *http.Client
-
-	RequestBodyHook func(profile string, body []byte) error
+	Sink       RecorderSink
 }
 
 func NewProxy(profile Profile, observer Observer, recorder Recorder) (*Proxy, error) {
@@ -50,6 +50,7 @@ func NewProxy(profile Profile, observer Observer, recorder Recorder) (*Proxy, er
 		Observer:   observer,
 		Recorder:   recorder,
 		HTTPClient: &http.Client{Timeout: 0},
+		Sink:       noopSink{},
 	}, nil
 }
 
@@ -115,6 +116,8 @@ func (p *Proxy) captureMiddleware(next http.Handler) http.Handler {
 			Protocol:   p.Protocol,
 			StartedAt:  start,
 			Upstream:   sanitisedUpstream(p.Upstream),
+			Kind:       classifyRequestKind(Protocol(p.Protocol), r.URL.Path, r.Method),
+			Outcome:    OutcomeUnknown,
 			Request: ExchangeRequest{
 				Method:     r.Method,
 				Endpoint:   r.URL.Path,
@@ -131,6 +134,34 @@ func (p *Proxy) captureMiddleware(next http.Handler) http.Handler {
 		ctx := contextWithExchange(r.Context(), &exchange)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func classifyRequestKind(protocol Protocol, path, method string) RequestKind {
+	if method != http.MethodPost {
+		return classifyNonModelRequest(protocol, path)
+	}
+	endpoints, ok := chainEligibleEndpoints[protocol]
+	if !ok {
+		return RequestKindUnclassified
+	}
+	if v, has := endpoints[path]; has && v {
+		return RequestKindModel
+	}
+	return classifyNonModelRequest(protocol, path)
+}
+
+func classifyNonModelRequest(protocol Protocol, path string) RequestKind {
+	if path == "" {
+		return RequestKindUnclassified
+	}
+	endpoints, ok := chainEligibleEndpoints[protocol]
+	if !ok {
+		return RequestKindUnclassified
+	}
+	if v, has := endpoints[path]; has && !v {
+		return RequestKindNonModel
+	}
+	return RequestKindUnknown
 }
 
 func (p *Proxy) parseComponents(body []byte) []model.ContextComponent {
@@ -178,115 +209,142 @@ func (p *Proxy) observeResponse(resp *http.Response) error {
 	exchange.Response.LatencyMs = time.Since(exchange.StartedAt).Milliseconds()
 
 	if !stream {
-		body, ok := p.readNonStreamResponseBody(resp)
-		if ok && len(body) > 0 {
-			resp.Body = io.NopCloser(bytes.NewReader(body))
-			resp.ContentLength = int64(len(body))
+		prefix, err := p.pipeNonStreamBody(resp)
+		if err != nil {
+			exchange.Outcome = OutcomeTransportFailure
+			p.recordExchange(exchange)
+			return err
 		}
-		if respObserver, hasResp := p.Observer.(ResponseObserver); hasResp && len(body) > 0 {
-			if meta := respObserver.ParseResponse(body); meta != nil {
+		if respObserver, hasResp := p.Observer.(ResponseObserver); hasResp && len(prefix) > 0 {
+			if meta := respObserver.ParseResponse(prefix); meta != nil {
 				exchange.Response.OpenAIResponses = meta
 				if meta.ResponseID != "" && exchange.Response.ResponseID == "" {
 					exchange.Response.ResponseID = meta.ResponseID
 				}
 			}
-			if usage := respObserver.ParseResponseUsage(body); usage != nil {
+			if usage := respObserver.ParseResponseUsage(prefix); usage != nil {
 				exchange.Response.ProviderUsage = usage
 			}
 		}
-	} else {
-		if streamObserver, hasStream := p.Observer.(StreamUsageObserver); hasStream {
-			wrapper := newStreamObserver(streamObserver, resp.Body, p.Recorder, exchange)
-			resp.Body = wrapper
-			if usage := parseUsageFromHeaders(resp.Header); usage != nil {
-				usage.Source = model.MeasurementDerived
-				exchange.Response.Usage = usage
-			}
-			p.applyObservedUsage(exchange)
-			return nil
-		}
+		exchange.Outcome = outcomeFromStatus(resp.StatusCode)
+		ProviderUsageToObservedApply(exchange)
+		p.recordExchange(exchange)
+		return nil
 	}
 
-	if usage := parseUsageFromHeaders(resp.Header); usage != nil {
-		usage.Source = model.MeasurementDerived
-		exchange.Response.Usage = usage
+	if streamObserver, hasStream := p.Observer.(StreamUsageObserver); hasStream {
+		wrapper := newStreamObserver(streamObserver, resp.Body, p.Recorder, exchange)
+		resp.Body = wrapper
+		exchange.Outcome = OutcomeUpstreamOK
+		ProviderUsageToObservedApply(exchange)
+		return nil
 	}
 
-	p.applyObservedUsage(exchange)
-	p.Recorder.Record(*exchange)
+	exchange.Outcome = outcomeFromStatus(resp.StatusCode)
+	ProviderUsageToObservedApply(exchange)
+	p.recordExchange(exchange)
 	return nil
 }
 
-func (p *Proxy) applyObservedUsage(exchange *Exchange) {
-	ApplyProviderUsageToExchange(exchange)
-}
-
-func ApplyProviderUsageToExchange(exchange *Exchange) {
-	if exchange == nil || exchange.Response.ProviderUsage == nil {
-		return
-	}
-	if exchange.Response.Usage == nil {
-		usage := providerUsageToObserved(exchange.Response.ProviderUsage)
-		exchange.Response.Usage = &usage
-		return
-	}
-	if exchange.Response.Usage.Input == 0 && exchange.Response.ProviderUsage.Input != nil {
-		exchange.Response.Usage.Input = *exchange.Response.ProviderUsage.Input
-	}
-	if exchange.Response.Usage.Cached == 0 && exchange.Response.ProviderUsage.CachedInput != nil {
-		exchange.Response.Usage.Cached = *exchange.Response.ProviderUsage.CachedInput
-	}
-	if exchange.Response.Usage.Output == 0 && exchange.Response.ProviderUsage.Output != nil {
-		exchange.Response.Usage.Output = *exchange.Response.ProviderUsage.Output
-	}
-	if exchange.Response.Usage.Reasoning == 0 && exchange.Response.ProviderUsage.ReasoningOutput != nil {
-		exchange.Response.Usage.Reasoning = *exchange.Response.ProviderUsage.ReasoningOutput
-	}
-}
-
-func (p *Proxy) readNonStreamResponseBody(resp *http.Response) ([]byte, bool) {
+// pipeNonStreamBody reads the upstream response body once, captures a
+// bounded observation prefix, and re-wraps the rest so the reverse proxy
+// forwards the full body unchanged. The captured prefix is stashed on the
+// request context for usage parsing.
+func (p *Proxy) pipeNonStreamBody(resp *http.Response) ([]byte, error) {
 	if resp == nil || resp.Body == nil {
-		return nil, false
+		return nil, nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxCaptureBytes+1))
+	full, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, false
+		_ = resp.Body.Close()
+		return nil, err
 	}
 	_ = resp.Body.Close()
-	if len(body) > MaxCaptureBytes {
-		return body[:MaxCaptureBytes], true
+	prefix := full
+	if len(prefix) > MaxCaptureBytes {
+		prefix = prefix[:MaxCaptureBytes]
 	}
-	return body, true
+	resp.Body = io.NopCloser(bytes.NewReader(full))
+	resp.ContentLength = int64(len(full))
+	if resp.Header != nil {
+		resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(full)))
+	}
+	if resp.Request != nil {
+		ctx := resp.Request.Context()
+		if existing, ok := ctx.Value(prefixAttachmentKey{}).(*prefixAttachment); ok && existing != nil {
+			existing.prefix = prefix
+			existing.full = full
+		} else {
+			ctx = context.WithValue(ctx, prefixAttachmentKey{}, &prefixAttachment{prefix: prefix, full: full})
+			resp.Request = resp.Request.WithContext(ctx)
+		}
+	}
+	return prefix, nil
 }
 
-func providerUsageToObserved(p *ProviderUsage) ObservedUsage {
-	out := ObservedUsage{Source: model.MeasurementMeasured}
-	if p.Input != nil {
-		out.Input = *p.Input
+type prefixAttachmentKey struct{}
+
+type prefixAttachment struct {
+	prefix []byte
+	full   []byte
+}
+
+func peekCapturedBody(resp *http.Response) ([]byte, bool) {
+	if resp == nil || resp.Request == nil {
+		return nil, false
 	}
-	if p.CachedInput != nil {
-		out.Cached = *p.CachedInput
+	if att := resp.Request.Context().Value(prefixAttachmentKey{}); att != nil {
+		if a, ok := att.(*prefixAttachment); ok {
+			return a.prefix, true
+		}
 	}
-	if p.Output != nil {
-		out.Output = *p.Output
+	return nil, false
+}
+
+func outcomeFromStatus(status int) RequestOutcome {
+	if status >= 200 && status < 400 {
+		return OutcomeUpstreamOK
 	}
-	if p.ReasoningOutput != nil {
-		out.Reasoning = *p.ReasoningOutput
+	if status == http.StatusBadGateway || status >= 500 {
+		return OutcomeUpstreamHTTPError
 	}
-	out.Total = out.Input + out.Output
-	return out
+	return OutcomeUpstreamHTTPError
+}
+
+func (p *Proxy) recordExchange(exchange *Exchange) {
+	if exchange == nil || p.Recorder == nil {
+		return
+	}
+	if err := p.Recorder.Record(*exchange); err != nil {
+		p.Sink.RecordRecorderFailure(exchange.Profile, asRecorderError(err))
+	}
+}
+
+func asRecorderError(err error) *RecorderError {
+	if err == nil {
+		return nil
+	}
+	var re *RecorderError
+	if errors.As(err, &re) {
+		return re
+	}
+	return &RecorderError{Profile: "", Op: "record", Err: err}
 }
 
 func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, context.Canceled) {
+	exchange, ok := exchangeFromContext(r.Context())
+	if !ok {
+		http.Error(w, "upstream gateway unreachable", http.StatusBadGateway)
 		return
 	}
-	if exchange, ok := exchangeFromContext(r.Context()); ok {
-		exchange.Response.Status = http.StatusBadGateway
-		exchange.Response.Finish = err.Error()
-		exchange.Response.LatencyMs = time.Since(exchange.StartedAt).Milliseconds()
-		p.Recorder.Record(*exchange)
+	exchange.Response.Status = http.StatusBadGateway
+	exchange.Response.LatencyMs = time.Since(exchange.StartedAt).Milliseconds()
+	if errors.Is(err, context.Canceled) {
+		exchange.Outcome = OutcomeClientCanceled
+	} else {
+		exchange.Outcome = OutcomeTransportFailure
 	}
+	p.recordExchange(exchange)
 	http.Error(w, "upstream gateway unreachable", http.StatusBadGateway)
 }
 
@@ -340,28 +398,6 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func parseUsageFromHeaders(h http.Header) *ObservedUsage {
-	if h.Get("x-usage-input-tokens") == "" && h.Get("anthropic-input-tokens") == "" {
-		return nil
-	}
-	parse := func(a, b string) int64 {
-		v := firstNonEmpty(h.Get(a), h.Get(b))
-		if v == "" {
-			return 0
-		}
-		var n int64
-		_, _ = fmt.Sscanf(v, "%d", &n)
-		return n
-	}
-	return &ObservedUsage{
-		Input:     parse("x-usage-input-tokens", "anthropic-input-tokens"),
-		Output:    parse("x-usage-output-tokens", "anthropic-output-tokens"),
-		Cached:    parse("x-usage-cached-input-tokens", "anthropic-cached-input-tokens"),
-		Reasoning: parse("x-usage-reasoning-tokens", "anthropic-reasoning-tokens"),
-		Total:     parse("x-usage-total-tokens", "anthropic-total-tokens"),
-	}
-}
-
 func extractModel(body []byte, protocol Protocol) string {
 	if len(body) == 0 {
 		return ""
@@ -409,4 +445,47 @@ func IsLoopbackAddress(addr string) bool {
 		return true
 	}
 	return IsLoopbackHost(host)
+}
+
+type prefixBuffer struct {
+	mu     []byte
+	limit  int
+	trunc  bool
+	closed atomic.Bool
+}
+
+func newPrefixBuffer(limit int) *prefixBuffer {
+	return &prefixBuffer{limit: limit}
+}
+
+func (p *prefixBuffer) Write(b []byte) (int, error) {
+	if p.closed.Load() {
+		return 0, io.ErrClosedPipe
+	}
+	remaining := p.limit - len(p.mu)
+	if remaining <= 0 {
+		p.trunc = true
+		return len(b), nil
+	}
+	if len(b) > remaining {
+		p.mu = append(p.mu, b[:remaining]...)
+		p.trunc = true
+		return len(b), nil
+	}
+	p.mu = append(p.mu, b...)
+	return len(b), nil
+}
+
+func (p *prefixBuffer) Bytes() []byte {
+	if p == nil {
+		return nil
+	}
+	return append([]byte(nil), p.mu...)
+}
+
+func (p *prefixBuffer) Truncated() bool { return p.trunc }
+
+func (p *prefixBuffer) Close() error {
+	p.closed.Store(true)
+	return nil
 }

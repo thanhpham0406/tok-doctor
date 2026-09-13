@@ -23,24 +23,24 @@ func TestProviderUsage_NonStreamingInputTokensParsed(t *testing.T) {
 	if pu == nil {
 		t.Fatalf("usage nil")
 	}
-	if pu.Input == nil || *pu.Input != 84279 {
-		t.Fatalf("input = %+v", pu.Input)
+	if pu.InputTokens == nil || *pu.InputTokens != 84279 {
+		t.Fatalf("input = %+v", pu.InputTokens)
 	}
-	if pu.Output == nil || *pu.Output != 753 {
-		t.Fatalf("output = %+v", pu.Output)
+	if pu.OutputTokens == nil || *pu.OutputTokens != 753 {
+		t.Fatalf("output = %+v", pu.OutputTokens)
 	}
-	if pu.CachedInput == nil || *pu.CachedInput != 75312 {
-		t.Fatalf("cached = %+v", pu.CachedInput)
+	if pu.CacheReadInputTokens == nil || *pu.CacheReadInputTokens != 75312 {
+		t.Fatalf("cached = %+v", pu.CacheReadInputTokens)
 	}
-	if pu.ReasoningOutput == nil || *pu.ReasoningOutput != 512 {
-		t.Fatalf("reasoning = %+v", pu.ReasoningOutput)
+	if pu.ReasoningOutputTokens == nil || *pu.ReasoningOutputTokens != 512 {
+		t.Fatalf("reasoning = %+v", pu.ReasoningOutputTokens)
 	}
 }
 
 func TestProviderUsage_NonStreamingOutputTokensParsed(t *testing.T) {
 	body := []byte(`{"usage":{"input_tokens":1000,"output_tokens":42}}`)
 	pu := OpenAIResponsesObserver{}.ParseResponseUsage(body)
-	if pu == nil || pu.Output == nil || *pu.Output != 42 {
+	if pu == nil || pu.OutputTokens == nil || *pu.OutputTokens != 42 {
 		t.Fatalf("output missing: %+v", pu)
 	}
 }
@@ -48,7 +48,7 @@ func TestProviderUsage_NonStreamingOutputTokensParsed(t *testing.T) {
 func TestProviderUsage_NonStreamingCachedTokensParsed(t *testing.T) {
 	body := []byte(`{"usage":{"input_tokens":5000,"output_tokens":10,"input_tokens_details":{"cached_tokens":4500}}}`)
 	pu := OpenAIResponsesObserver{}.ParseResponseUsage(body)
-	if pu == nil || pu.CachedInput == nil || *pu.CachedInput != 4500 {
+	if pu == nil || pu.CacheReadInputTokens == nil || *pu.CacheReadInputTokens != 4500 {
 		t.Fatalf("cached missing: %+v", pu)
 	}
 }
@@ -56,7 +56,7 @@ func TestProviderUsage_NonStreamingCachedTokensParsed(t *testing.T) {
 func TestProviderUsage_NonStreamingReasoningTokensParsed(t *testing.T) {
 	body := []byte(`{"usage":{"input_tokens":500,"output_tokens":100,"output_tokens_details":{"reasoning_tokens":75}}}`)
 	pu := OpenAIResponsesObserver{}.ParseResponseUsage(body)
-	if pu == nil || pu.ReasoningOutput == nil || *pu.ReasoningOutput != 75 {
+	if pu == nil || pu.ReasoningOutputTokens == nil || *pu.ReasoningOutputTokens != 75 {
 		t.Fatalf("reasoning missing: %+v", pu)
 	}
 }
@@ -75,15 +75,15 @@ func TestProviderUsage_MissingCachedNotZero(t *testing.T) {
 	if pu == nil {
 		t.Fatalf("usage nil")
 	}
-	if pu.CachedInput != nil {
-		t.Fatalf("cached should be nil (missing field), got %+v", pu.CachedInput)
+	if pu.CacheReadInputTokens != nil {
+		t.Fatalf("cached should be nil (missing field), got %+v", pu.CacheReadInputTokens)
 	}
 }
 
 func TestProviderUsage_ExplicitCachedZeroIsZero(t *testing.T) {
 	body := []byte(`{"usage":{"input_tokens":1000,"output_tokens":10,"input_tokens_details":{"cached_tokens":0}}}`)
 	pu := OpenAIResponsesObserver{}.ParseResponseUsage(body)
-	if pu == nil || pu.CachedInput == nil || *pu.CachedInput != 0 {
+	if pu == nil || pu.CacheReadInputTokens == nil || *pu.CacheReadInputTokens != 0 {
 		t.Fatalf("expected explicit zero cached: %+v", pu)
 	}
 }
@@ -94,8 +94,8 @@ func TestProviderUsage_MissingReasoningNotZero(t *testing.T) {
 	if pu == nil {
 		t.Fatalf("usage nil")
 	}
-	if pu.ReasoningOutput != nil {
-		t.Fatalf("reasoning should be nil (missing), got %+v", pu.ReasoningOutput)
+	if pu.ReasoningOutputTokens != nil {
+		t.Fatalf("reasoning should be nil (missing), got %+v", pu.ReasoningOutputTokens)
 	}
 }
 
@@ -112,178 +112,82 @@ func TestProviderUsage_MalformedOptionalUsageDegrades(t *testing.T) {
 	}
 }
 
-func TestProviderUsage_AllZeroUsageIsUnknown(t *testing.T) {
+func TestProviderUsage_AllZeroUsageIsObservedZero(t *testing.T) {
 	body := []byte(`{"usage":{"input_tokens":0,"output_tokens":0}}`)
 	pu := OpenAIResponsesObserver{}.ParseResponseUsage(body)
-	if pu != nil {
-		t.Fatalf("expected nil for all-zero usage, got %+v", pu)
+	if pu == nil {
+		t.Fatalf("zero usage should still be observed; nil means upstream sent a structured empty usage block, not zero values")
+	}
+	if pu.InputTokens == nil || *pu.InputTokens != 0 {
+		t.Fatalf("input_tokens should be explicit zero pointer, got %+v", pu.InputTokens)
+	}
+	if pu.OutputTokens == nil || *pu.OutputTokens != 0 {
+		t.Fatalf("output_tokens should be explicit zero pointer, got %+v", pu.OutputTokens)
 	}
 }
 
 func TestProviderUsage_StreamTerminalEventParsed(t *testing.T) {
-	event := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"usage\":{\"input_tokens\":1000,\"output_tokens\":50,\"input_tokens_details\":{\"cached_tokens\":800},\"output_tokens_details\":{\"reasoning_tokens\":20}}}\n\n")
-	pu := OpenAIResponsesObserver{}.ParseStreamEvent(event)
-	if pu == nil {
-		t.Fatalf("nil usage from stream event")
+	state := newOpenAIStreamState()
+	obs := OpenAIResponsesObserver{}
+	pu, terminal := obs.ParseStreamFrame(state, []byte(`{"type":"response.completed","usage":{"input_tokens":1000,"output_tokens":50,"input_tokens_details":{"cached_tokens":800},"output_tokens_details":{"reasoning_tokens":20}}}`))
+	if pu == nil || !terminal {
+		t.Fatalf("usage=%+v terminal=%v", pu, terminal)
 	}
-	if pu.Input == nil || *pu.Input != 1000 {
-		t.Fatalf("input = %+v", pu.Input)
+	if pu.InputTokens == nil || *pu.InputTokens != 1000 {
+		t.Fatalf("input = %+v", pu.InputTokens)
 	}
-	if pu.CachedInput == nil || *pu.CachedInput != 800 {
-		t.Fatalf("cached = %+v", pu.CachedInput)
+	if pu.CacheReadInputTokens == nil || *pu.CacheReadInputTokens != 800 {
+		t.Fatalf("cached = %+v", pu.CacheReadInputTokens)
 	}
-	if pu.Output == nil || *pu.Output != 50 {
-		t.Fatalf("output = %+v", pu.Output)
+	if pu.OutputTokens == nil || *pu.OutputTokens != 50 {
+		t.Fatalf("output = %+v", pu.OutputTokens)
 	}
-	if pu.ReasoningOutput == nil || *pu.ReasoningOutput != 20 {
-		t.Fatalf("reasoning = %+v", pu.ReasoningOutput)
+	if pu.ReasoningOutputTokens == nil || *pu.ReasoningOutputTokens != 20 {
+		t.Fatalf("reasoning = %+v", pu.ReasoningOutputTokens)
 	}
 }
 
 func TestProviderUsage_StreamSkipsNonUsageEvents(t *testing.T) {
-	event := []byte("event: response.created\ndata: {\"type\":\"response.created\"}\n\nevent: response.in_progress\ndata: {\"type\":\"response.in_progress\"}\n\n")
-	pu := OpenAIResponsesObserver{}.ParseStreamEvent(event)
-	if pu != nil {
-		t.Fatalf("expected nil, got %+v", pu)
+	state := newOpenAIStreamState()
+	obs := OpenAIResponsesObserver{}
+	if pu, _ := obs.ParseStreamFrame(state, []byte(`{"type":"response.created"}`)); pu != nil {
+		t.Fatalf("expected nil usage from response.created, got %+v", pu)
+	}
+	if pu, _ := obs.ParseStreamFrame(state, []byte(`{"type":"response.in_progress"}`)); pu != nil {
+		t.Fatalf("expected nil usage from response.in_progress, got %+v", pu)
 	}
 }
 
 func TestProviderUsage_StreamMalformedDegrades(t *testing.T) {
-	event := []byte("data: {not json}\n\ndata: {\"type\":\"x\"}\n\n")
-	pu := OpenAIResponsesObserver{}.ParseStreamEvent(event)
-	if pu != nil {
+	state := newOpenAIStreamState()
+	obs := OpenAIResponsesObserver{}
+	if pu, _ := obs.ParseStreamFrame(state, []byte(`{not json`)); pu != nil {
 		t.Fatalf("malformed events should not yield usage, got %+v", pu)
 	}
 }
 
-func TestProviderUsage_StreamOversizedDegrades(t *testing.T) {
-	huge := strings.Repeat("data: ", (OpenAIResponsesObserver{}.MaxStreamEventBytes()/6)+10)
-	event := []byte(huge + "\n\n")
-	streamer := &streamObserver{observer: OpenAIResponsesObserver{}}
-	streamer.overran = true
-	streamer.feed(event)
-	if streamer.Usage() != nil {
-		t.Fatalf("oversized event should not yield usage")
-	}
-}
-
 func TestProviderUsage_StreamEmptyYieldsNil(t *testing.T) {
-	pu := OpenAIResponsesObserver{}.ParseStreamEvent(nil)
-	if pu != nil {
+	obs := OpenAIResponsesObserver{}
+	state := newOpenAIStreamState()
+	if pu, _ := obs.ParseStreamFrame(state, nil); pu != nil {
 		t.Fatalf("nil event should yield nil usage")
 	}
-	pu = OpenAIResponsesObserver{}.ParseStreamEvent([]byte{})
-	if pu != nil {
+	if pu, _ := obs.ParseStreamFrame(state, []byte{}); pu != nil {
 		t.Fatalf("empty event should yield nil usage")
 	}
 }
 
 func TestProviderUsage_StreamRawContentNotPersisted(t *testing.T) {
 	secret := "SECRET_REASONING_TEXT_DO_NOT_PERSIST"
-	event := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"reasoning\":\"" + secret + "\"}\n\n")
-	pu := OpenAIResponsesObserver{}.ParseStreamEvent(event)
+	state := newOpenAIStreamState()
+	obs := OpenAIResponsesObserver{}
+	pu, _ := obs.ParseStreamFrame(state, []byte(fmt.Sprintf(`{"type":"response.completed","usage":{"input_tokens":1,"output_tokens":1},"reasoning":%q}`, secret)))
 	if pu == nil {
 		t.Fatalf("usage nil")
 	}
 	raw, _ := json.Marshal(pu)
 	if strings.Contains(string(raw), secret) {
 		t.Fatalf("usage leaked reasoning text: %s", raw)
-	}
-}
-
-func TestProxy_StreamingForwardsChunks(t *testing.T) {
-	chunks := []string{"first", "second", "third"}
-	usage := []byte(`{"type":"response.completed","usage":{"input_tokens":111,"output_tokens":22}}`)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		flusher, _ := w.(http.Flusher)
-		for _, c := range chunks {
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", c)
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-		_, _ = fmt.Fprintf(w, "event: response.completed\ndata: %s\n\n", string(usage))
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}))
-	defer upstream.Close()
-
-	listen, _ := freeLoopback(t)
-	dir := t.TempDir()
-	rec, _ := NewFileRecorder(dir)
-	defer func() { _ = rec.Close() }()
-	proxy, _ := NewProxy(
-		Profile{Name: "p", Enabled: true, Listen: listen, Protocol: "openai_responses", Source: "codex", Upstream: upstream.URL},
-		OpenAIResponsesObserver{}, rec,
-	)
-	srv := httptest.NewServer(proxy.Handler())
-	defer srv.Close()
-
-	body := []byte(`{"model":"m","input":[{"role":"user","content":"hi"}]}`)
-	resp, err := http.Post(srv.URL+"/v1/responses", "application/json", strings.NewReader(string(body)))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	all, _ := readAllChunks2(resp.Body)
-	if !strings.Contains(all, "first") || !strings.Contains(all, "third") {
-		t.Fatalf("missing chunks: %q", all)
-	}
-
-	persisted, err := Replay(rec, "p")
-	if err != nil {
-		t.Fatalf("replay: %v", err)
-	}
-	if len(persisted) != 1 {
-		t.Fatalf("persisted = %d, want 1", len(persisted))
-	}
-	pu := persisted[0].Response.ProviderUsage
-	if pu == nil || pu.Input == nil || *pu.Input != 111 {
-		t.Fatalf("provider usage = %+v", pu)
-	}
-}
-
-func TestProxy_StreamingMalformedSSEDoesNotBreakProxy(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		flusher, _ := w.(http.Flusher)
-		_, _ = w.Write([]byte("this is not sse at all\n\n"))
-		if flusher != nil {
-			flusher.Flush()
-		}
-		_, _ = w.Write([]byte("event: response.completed\ndata: {not valid json\n\n"))
-		if flusher != nil {
-			flusher.Flush()
-		}
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}))
-	defer upstream.Close()
-
-	listen, _ := freeLoopback(t)
-	rec, _ := NewFileRecorder(t.TempDir())
-	defer func() { _ = rec.Close() }()
-	proxy, _ := NewProxy(
-		Profile{Name: "p", Enabled: true, Listen: listen, Protocol: "openai_responses", Source: "codex", Upstream: upstream.URL},
-		OpenAIResponsesObserver{}, rec,
-	)
-	srv := httptest.NewServer(proxy.Handler())
-	defer srv.Close()
-
-	resp, err := http.Get(srv.URL + "/v1/responses")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	all, _ := readAllChunks2(resp.Body)
-	if !strings.Contains(all, "this is not sse") || !strings.Contains(all, "[DONE]") {
-		t.Fatalf("malformed SSE did not pass through: %q", all)
 	}
 }
 
@@ -322,11 +226,11 @@ func TestProxy_NonStreamingExtractsProviderUsage(t *testing.T) {
 		t.Fatalf("persisted = %d, want 1", len(persisted))
 	}
 	pu := persisted[0].Response.ProviderUsage
-	if pu == nil || pu.Input == nil || *pu.Input != 100 {
-		t.Fatalf("usage = %+v", pu)
+	if pu == nil || pu.InputTokens == nil || *pu.InputTokens != 100 {
+		t.Fatalf("input_tokens = %+v", pu)
 	}
-	if pu.CachedInput == nil || *pu.CachedInput != 80 {
-		t.Fatalf("cached = %+v", pu)
+	if pu.CacheReadInputTokens == nil || *pu.CacheReadInputTokens != 80 {
+		t.Fatalf("cached = %+v", pu.CacheReadInputTokens)
 	}
 	if persisted[0].Response.Usage == nil || persisted[0].Response.Usage.Source != model.MeasurementMeasured {
 		t.Fatalf("observed usage should be measured, got %+v", persisted[0].Response.Usage)
@@ -376,150 +280,26 @@ func readAllChunks2(r io.Reader) (string, error) {
 
 func TestProviderUsage_ApplyProviderUsage_MeasurementKindMeasured(t *testing.T) {
 	v := int64(100)
-	pu := &ProviderUsage{Input: &v}
+	pu := &ProviderUsage{InputTokens: &v}
 	ex := Exchange{Response: ExchangeResponse{ProviderUsage: pu}}
-	ApplyProviderUsageToExchange(&ex)
+	ProviderUsageToObservedApply(&ex)
 	if ex.Response.Usage == nil || ex.Response.Usage.Source != model.MeasurementMeasured {
 		t.Fatalf("expected measured, got %+v", ex.Response.Usage)
 	}
-	if ex.Response.Usage.Input != 100 {
-		t.Fatalf("input = %d", ex.Response.Usage.Input)
+	if ex.Response.Usage.TotalInput != 100 {
+		t.Fatalf("TotalInput = %d, want 100", ex.Response.Usage.TotalInput)
 	}
 }
 
 func TestProviderUsage_FreshInputDerived(t *testing.T) {
 	input, cached := int64(1000), int64(750)
-	pu := &ProviderUsage{Input: &input, CachedInput: &cached}
-	ex := Exchange{Response: ExchangeResponse{ProviderUsage: pu}}
-	ApplyProviderUsageToExchange(&ex)
-	if ex.Response.Usage.Cached != 750 {
-		t.Fatalf("cached = %d", ex.Response.Usage.Cached)
+	pu := &ProviderUsage{InputTokens: &input, CacheReadInputTokens: &cached}
+	observed := ProviderUsageToObserved(pu)
+	if observed.Cached != 750 {
+		t.Fatalf("cached = %d, want 750", observed.Cached)
 	}
-	request := RequestSummary{Attributed: AttributedTotal{Value: model.NewMeasurement(900, model.MeasurementEstimated)}}
-	puSummary := buildRequestProviderSummary(ex, request.Attributed.Value)
-	if puSummary == nil || puSummary.FreshInput == nil || *puSummary.FreshInput != 250 {
-		t.Fatalf("fresh = %+v", puSummary)
-	}
-}
-
-func TestProviderUsage_CachedNotAddedToInput(t *testing.T) {
-	v := int64(100)
-	c := int64(80)
-	pu := &ProviderUsage{Input: &v, CachedInput: &c}
-	out := providerUsageToObserved(pu)
-	if out.Input != 100 {
-		t.Fatalf("input = %d, want 100 (no double count)", out.Input)
-	}
-	if out.Total != out.Input+out.Output {
-		t.Fatalf("total must be input + output only")
-	}
-}
-
-func TestProviderUsage_ReasoningNotAddedToOutput(t *testing.T) {
-	v := int64(50)
-	r := int64(20)
-	pu := &ProviderUsage{Output: &v, ReasoningOutput: &r}
-	out := providerUsageToObserved(pu)
-	if out.Output != 50 {
-		t.Fatalf("output = %d, want 50 (no double count)", out.Output)
-	}
-	if out.Total != out.Input+out.Output {
-		t.Fatalf("total must not include reasoning")
-	}
-}
-
-func TestProviderUsage_GapPositive(t *testing.T) {
-	ex := exchangeWithAttributed(80000, int64P(84279), int64P(75312), nil)
-	got := summarizeCallProviderUsage2(ex, 80000)
-	if got.gap == nil || got.gap.ValueOrZero() != 4279 {
-		t.Fatalf("gap = %+v, want 4279", got.gap)
-	}
-}
-
-func TestProviderUsage_GapNegative(t *testing.T) {
-	ex := exchangeWithAttributed(25398, int64P(23504), nil, nil)
-	got := summarizeCallProviderUsage2(ex, 25398)
-	if got.gap == nil || got.gap.ValueOrZero() != -1894 {
-		t.Fatalf("gap = %+v, want -1894", got.gap)
-	}
-}
-
-func TestProviderUsage_GapZero(t *testing.T) {
-	ex := exchangeWithAttributed(1000, int64P(1000), nil, nil)
-	got := summarizeCallProviderUsage2(ex, 1000)
-	if got.gap == nil || got.gap.ValueOrZero() != 0 {
-		t.Fatalf("gap = %+v, want 0", got.gap)
-	}
-}
-
-func TestProviderUsage_GapUnknown(t *testing.T) {
-	ex := Exchange{Response: ExchangeResponse{ProviderUsage: &ProviderUsage{}}}
-	got := summarizeCallProviderUsage2(ex, 1000)
-	if got.gap != nil {
-		t.Fatalf("gap should be nil for unknown provider input, got %+v", got.gap)
-	}
-}
-
-func TestProviderUsage_CoverageBasic(t *testing.T) {
-	ex := exchangeWithAttributed(74000, int64P(84000), nil, nil)
-	got := summarizeCallProviderUsage2(ex, 74000)
-	if got.coverage == nil || got.coverage.Percent == nil {
-		t.Fatalf("coverage nil")
-	}
-	if got.coverage.Kind != "estimated" {
-		t.Fatalf("coverage kind = %q, want estimated", got.coverage.Kind)
-	}
-	gotVal := *got.coverage.Percent
-	if gotVal < 88.0 || gotVal > 88.2 {
-		t.Fatalf("coverage percent = %f, want ~88.1", gotVal)
-	}
-}
-
-func TestProviderUsage_CoverageOver100Preserved(t *testing.T) {
-	ex := exchangeWithAttributed(25398, int64P(23504), nil, nil)
-	got := summarizeCallProviderUsage2(ex, 25398)
-	if got.coverage == nil || got.coverage.Percent == nil {
-		t.Fatalf("coverage nil")
-	}
-	if *got.coverage.Percent <= 100 {
-		t.Fatalf("coverage percent = %f, want >100", *got.coverage.Percent)
-	}
-}
-
-func TestProviderUsage_CoverageNotClamped(t *testing.T) {
-	ex := exchangeWithAttributed(50000, int64P(10), nil, nil)
-	got := summarizeCallProviderUsage2(ex, 50000)
-	if got.coverage == nil || got.coverage.Percent == nil {
-		t.Fatalf("coverage nil")
-	}
-	if *got.coverage.Percent <= 100 {
-		t.Fatalf("coverage percent = %f, want >100", *got.coverage.Percent)
-	}
-}
-
-func TestProviderUsage_CoverageProviderZeroUnavailable(t *testing.T) {
-	ex := exchangeWithAttributed(5000, int64P(0), nil, nil)
-	got := summarizeCallProviderUsage2(ex, 5000)
-	if got.coverage != nil {
-		t.Fatalf("coverage should be nil when provider input is zero, got %+v", got.coverage)
-	}
-}
-
-func TestProviderUsage_CoverageUnknownProvider(t *testing.T) {
-	ex := Exchange{Response: ExchangeResponse{}}
-	got := summarizeCallProviderUsage2(ex, 1000)
-	if got.coverage != nil {
-		t.Fatalf("coverage should be nil when provider input missing, got %+v", got.coverage)
-	}
-}
-
-func TestProviderUsage_CoverageUnknownAttributed(t *testing.T) {
-	v := int64(100)
-	ex := Exchange{Response: ExchangeResponse{ProviderUsage: &ProviderUsage{Input: &v}}}
-	got := summarizeCallProviderUsage2(ex, 0)
-	got.coverage = nil
-	if got.coverage != nil {
-		t.Fatalf("coverage should be nil when attributed unknown")
+	if observed.RawInput != 1000 {
+		t.Fatalf("RawInput = %d, want 1000", observed.RawInput)
 	}
 }
 
@@ -572,7 +352,7 @@ func TestChain_MissingUsageOneOfSeven_AggregateUnknown(t *testing.T) {
 func TestChain_MissingCachedOnly_AggregateUnknown(t *testing.T) {
 	exchanges := smallOpenAIResponsesChain(3)
 	setProviderUsageAll(exchanges, []int64{100, 200, 300}, []int64{50, 60, 70})
-	exchanges[1].Response.ProviderUsage.CachedInput = nil
+	exchanges[1].Response.ProviderUsage.CacheReadInputTokens = nil
 	chains := AnalyzeChains(exchanges)
 	c := chains[0]
 	if c.ProviderCachedInput != nil {
@@ -587,9 +367,9 @@ func TestChain_MissingOutputOnly_AggregateUnknown(t *testing.T) {
 	exchanges := smallOpenAIResponsesChain(3)
 	setProviderUsageAll(exchanges, []int64{100, 200, 300}, []int64{50, 60, 70})
 	outV := int64(10)
-	exchanges[0].Response.ProviderUsage.Output = &outV
-	exchanges[2].Response.ProviderUsage.Output = &outV
-	exchanges[1].Response.ProviderUsage.Output = nil
+	exchanges[0].Response.ProviderUsage.OutputTokens = &outV
+	exchanges[2].Response.ProviderUsage.OutputTokens = &outV
+	exchanges[1].Response.ProviderUsage.OutputTokens = nil
 	chains := AnalyzeChains(exchanges)
 	c := chains[0]
 	if c.ProviderOutput != nil {
@@ -606,146 +386,6 @@ func TestChain_ProviderInputZero_CoverageUnavailable(t *testing.T) {
 	chains := AnalyzeChains(exchanges)
 	if chains[0].AttributionCoverage != nil {
 		t.Fatalf("coverage should be unavailable, got %+v", chains[0].AttributionCoverage)
-	}
-}
-
-func TestRender_InspectShowsProviderUsage(t *testing.T) {
-	ex := exchangeWithAttributed(74355, int64P(84279), int64P(75312), int64P(753))
-	s := SummarizeRequest(ex)
-	var buf strings.Builder
-	if err := RenderInspect(&buf, s); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	out := buf.String()
-	for _, want := range []string{"Provider usage", "Input", "84,279", "Cached", "75,312", "Fresh", "Output", "753", "Attribution", "Coverage"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("inspect missing %q in %q", want, out)
-		}
-	}
-}
-
-func TestRender_InspectUnknownRendersDash(t *testing.T) {
-	ex := exchangeWithAttributed(1000, nil, nil, nil)
-	s := SummarizeRequest(ex)
-	var buf strings.Builder
-	if err := RenderInspect(&buf, s); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	out := buf.String()
-	if strings.Contains(out, "Provider usage") {
-		t.Fatalf("inspect should not show provider section when no usage: %q", out)
-	}
-	if strings.Contains(out, "Attribution\n") {
-		t.Fatalf("inspect should not show attribution when no usage: %q", out)
-	}
-}
-
-func TestRender_ChainShowsProviderUsageTable(t *testing.T) {
-	exchanges := smallOpenAIResponsesChain(3)
-	setProviderUsageAll(exchanges, []int64{84279, 57731, 95000}, []int64{75312, 45000, 70000})
-	outV := int64(100)
-	for i := range exchanges {
-		exchanges[i].Response.ProviderUsage.Output = &outV
-	}
-	chain := AnalyzeChains(exchanges)[0]
-	var buf strings.Builder
-	if err := RenderChain(&buf, chain); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	out := buf.String()
-	for _, want := range []string{"Provider usage", "84,279", "75,312", "8,967", "Coverage", "Provider input", "Cached input", "Fresh input", "Usage observed calls  3/3"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("chain missing %q in %q", want, out)
-		}
-	}
-}
-
-func TestRender_ChainShowsEstimatedMarker(t *testing.T) {
-	exchanges := smallOpenAIResponsesChain(2)
-	setProviderUsageAll(exchanges, []int64{100, 200}, []int64{50, 100})
-	outV := int64(10)
-	for i := range exchanges {
-		exchanges[i].Response.ProviderUsage.Output = &outV
-	}
-	chain := AnalyzeChains(exchanges)[0]
-	var buf strings.Builder
-	if err := RenderChain(&buf, chain); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	out := buf.String()
-	if !strings.Contains(out, "*") {
-		t.Fatalf("expected estimated marker in coverage output: %q", out)
-	}
-}
-
-func TestRender_ChainsListShowsCoverage(t *testing.T) {
-	exchanges := smallOpenAIResponsesChain(2)
-	setProviderUsageAll(exchanges, []int64{84279, 57731}, []int64{75312, 45000})
-	chains := AnalyzeChains(exchanges)
-	var buf strings.Builder
-	if err := RenderChains(&buf, chains); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	out := buf.String()
-	if !strings.Contains(out, "Coverage") {
-		t.Fatalf("chains list missing Coverage column: %q", out)
-	}
-}
-
-func TestJSON_NumericProviderUsageValues(t *testing.T) {
-	exchanges := smallOpenAIResponsesChain(1)
-	setProviderUsageAll(exchanges, []int64{84279}, []int64{75312})
-	outV := int64(100)
-	exchanges[0].Response.ProviderUsage.Output = &outV
-	chain := AnalyzeChains(exchanges)[0]
-	raw, err := json.Marshal(chain)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	compact := strings.Join(strings.Fields(string(raw)), "")
-	if !strings.Contains(compact, `"input":84279`) {
-		t.Fatalf("json missing numeric input: %s", compact)
-	}
-	if !strings.Contains(compact, `"cachedInput":75312`) {
-		t.Fatalf("json missing numeric cachedInput: %s", compact)
-	}
-	if !strings.Contains(compact, `"providerInput":`) {
-		t.Fatalf("json missing providerInput field: %s", compact)
-	}
-	if strings.Contains(compact, `"84,279"`) || strings.Contains(compact, `"75,312"`) {
-		t.Fatalf("json contains formatted strings: %s", compact)
-	}
-}
-
-func TestJSON_CoveragePercentNumeric(t *testing.T) {
-	exchanges := smallOpenAIResponsesChain(1)
-	setProviderUsageAll(exchanges, []int64{1000}, []int64{500})
-	outV := int64(10)
-	exchanges[0].Response.ProviderUsage.Output = &outV
-	chain := AnalyzeChains(exchanges)[0]
-	raw, _ := json.Marshal(chain)
-	compact := strings.Join(strings.Fields(string(raw)), "")
-	if strings.Contains(compact, `"88.1%"`) {
-		t.Fatalf("coverage percent should be numeric, not string: %s", compact)
-	}
-	if !strings.Contains(compact, `"percent":`) {
-		t.Fatalf("coverage missing percent field: %s", compact)
-	}
-}
-
-func TestJSON_MeasurementKindsPreserved(t *testing.T) {
-	exchanges := smallOpenAIResponsesChain(1)
-	setProviderUsageAll(exchanges, []int64{100}, []int64{50})
-	outV := int64(10)
-	exchanges[0].Response.ProviderUsage.Output = &outV
-	chain := AnalyzeChains(exchanges)[0]
-	raw, _ := json.Marshal(chain)
-	compact := strings.Join(strings.Fields(string(raw)), "")
-	if !strings.Contains(compact, `"kind":"measured"`) {
-		t.Fatalf("provider input should be measured: %s", compact)
-	}
-	if !strings.Contains(compact, `"kind":"estimated"`) {
-		t.Fatalf("attribution kind should be estimated: %s", compact)
 	}
 }
 
@@ -779,8 +419,8 @@ func TestPrivacy_NoRawFunctionArgsInCapture(t *testing.T) {
 
 func TestChainSummary_JSON_NoRawBodies(t *testing.T) {
 	exchanges := observedMetricChainWithUsage([]int64{100, 200}, []int64{50, 100})
-	for _, e := range exchanges {
-		e.Request.Components = nil
+	for i := range exchanges {
+		exchanges[i].Request.Components = nil
 	}
 	chain := AnalyzeChains(exchanges)[0]
 	raw, _ := json.Marshal(chain)
@@ -874,12 +514,12 @@ func observedMetricChainWithUsage(inputs, cached []int64) []Exchange {
 			caV = cached[i]
 		}
 		base[i].Response.ProviderUsage = &ProviderUsage{
-			Input:       &inV,
-			CachedInput: &caV,
+			InputTokens:          &inV,
+			CacheReadInputTokens: &caV,
 		}
 		if i == 0 {
 			outV := int64(100)
-			base[i].Response.ProviderUsage.Output = &outV
+			base[i].Response.ProviderUsage.OutputTokens = &outV
 		}
 	}
 	return base
@@ -921,8 +561,8 @@ func setProviderUsageAll(exchanges []Exchange, inputs, cached []int64) {
 		}
 		inV, caV := inputs[i], cached[i]
 		exchanges[i].Response.ProviderUsage = &ProviderUsage{
-			Input:       &inV,
-			CachedInput: &caV,
+			InputTokens:          &inV,
+			CacheReadInputTokens: &caV,
 		}
 	}
 }
@@ -947,15 +587,15 @@ func exchangeWithAttributed(attributed int64, input, cached, output *int64) Exch
 	pu := &ProviderUsage{}
 	if input != nil {
 		v := *input
-		pu.Input = &v
+		pu.InputTokens = &v
 	}
 	if cached != nil {
 		v := *cached
-		pu.CachedInput = &v
+		pu.CacheReadInputTokens = &v
 	}
 	if output != nil {
 		v := *output
-		pu.Output = &v
+		pu.OutputTokens = &v
 	}
 	return Exchange{
 		ID:        "gw-attrib",

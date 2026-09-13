@@ -15,9 +15,24 @@ import (
 )
 
 type Recorder interface {
-	Record(Exchange)
+	Record(Exchange) error
 	Summary(profile string) (Summary, error)
 }
+
+type RecorderError struct {
+	Profile string
+	Op      string
+	Err     error
+}
+
+func (e *RecorderError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("recorder %s %s: %v", e.Op, e.Profile, e.Err)
+}
+
+func (e *RecorderError) Unwrap() error { return e.Err }
 
 type Summary struct {
 	Profile     string
@@ -26,11 +41,20 @@ type Summary struct {
 	CaptureFile string
 }
 
+type RecorderSink interface {
+	RecordRecorderFailure(profile string, err *RecorderError)
+}
+
+type noopSink struct{}
+
+func (noopSink) RecordRecorderFailure(string, *RecorderError) {}
+
 type FileRecorder struct {
 	dir   string
 	now   func() time.Time
 	mu    sync.Mutex
 	files map[string]*os.File
+	sink  RecorderSink
 }
 
 func NewFileRecorder(dir string) (*FileRecorder, error) {
@@ -41,18 +65,40 @@ func NewFileRecorder(dir string) (*FileRecorder, error) {
 		dir:   dir,
 		now:   time.Now,
 		files: map[string]*os.File{},
+		sink:  noopSink{},
 	}, nil
 }
 
-func (r *FileRecorder) Record(e Exchange) {
+func (r *FileRecorder) SetSink(sink RecorderSink) {
+	if sink == nil {
+		sink = noopSink{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sink = sink
+}
+
+func (r *FileRecorder) Record(e Exchange) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	f, err := r.fileFor(e.Profile)
 	if err != nil {
-		return
+		r.notifyFailure(e.Profile, "open", err)
+		return &RecorderError{Profile: e.Profile, Op: "open", Err: err}
 	}
 	enc := json.NewEncoder(f)
-	_ = enc.Encode(e)
+	if err := enc.Encode(e); err != nil {
+		r.notifyFailure(e.Profile, "encode", err)
+		return &RecorderError{Profile: e.Profile, Op: "encode", Err: err}
+	}
+	return nil
+}
+
+func (r *FileRecorder) notifyFailure(profile, op string, err error) {
+	if r.sink == nil {
+		return
+	}
+	r.sink.RecordRecorderFailure(profile, &RecorderError{Profile: profile, Op: op, Err: err})
 }
 
 func (r *FileRecorder) Summary(profile string) (Summary, error) {

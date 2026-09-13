@@ -226,91 +226,130 @@ func (OpenAIResponsesObserver) ParseResponseUsage(body []byte) *ProviderUsage {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil
 	}
-	return buildProviderUsage(resp.Usage)
+	return buildOpenAIProviderUsage(resp.Usage)
 }
 
 type openAIResponsesUsage struct {
-	InputTokens         int64                         `json:"input_tokens"`
-	OutputTokens        int64                         `json:"output_tokens"`
-	TotalTokens         int64                         `json:"total_tokens"`
+	InputTokens         *int64                        `json:"input_tokens"`
+	OutputTokens        *int64                        `json:"output_tokens"`
+	TotalTokens         *int64                        `json:"total_tokens"`
 	InputTokensDetails  *openAIResponsesInputDetails  `json:"input_tokens_details"`
 	OutputTokensDetails *openAIResponsesOutputDetails `json:"output_tokens_details"`
 }
 
 type openAIResponsesInputDetails struct {
-	CachedTokens int64 `json:"cached_tokens"`
+	CachedTokens *int64 `json:"cached_tokens"`
 }
 
 type openAIResponsesOutputDetails struct {
-	ReasoningTokens int64 `json:"reasoning_tokens"`
+	ReasoningTokens *int64 `json:"reasoning_tokens"`
 }
 
-func buildProviderUsage(raw *openAIResponsesUsage) *ProviderUsage {
+func buildOpenAIProviderUsage(raw *openAIResponsesUsage) *ProviderUsage {
 	if raw == nil {
 		return nil
 	}
 	out := &ProviderUsage{Source: "openai_responses"}
-	if raw.InputTokens > 0 {
-		v := raw.InputTokens
-		out.Input = &v
+	if raw.InputTokens != nil {
+		v := *raw.InputTokens
+		out.InputTokens = &v
 	}
-	if raw.InputTokensDetails != nil {
-		v := raw.InputTokensDetails.CachedTokens
-		out.CachedInput = &v
+	if raw.InputTokensDetails != nil && raw.InputTokensDetails.CachedTokens != nil {
+		v := *raw.InputTokensDetails.CachedTokens
+		out.CacheReadInputTokens = &v
 	}
-	if raw.OutputTokens > 0 {
-		v := raw.OutputTokens
-		out.Output = &v
+	if raw.OutputTokens != nil {
+		v := *raw.OutputTokens
+		out.OutputTokens = &v
 	}
-	if raw.OutputTokensDetails != nil {
-		v := raw.OutputTokensDetails.ReasoningTokens
-		out.ReasoningOutput = &v
+	if raw.OutputTokensDetails != nil && raw.OutputTokensDetails.ReasoningTokens != nil {
+		v := *raw.OutputTokensDetails.ReasoningTokens
+		out.ReasoningOutputTokens = &v
 	}
-	if out.Input == nil && out.CachedInput == nil && out.Output == nil && out.ReasoningOutput == nil {
+	if raw.TotalTokens != nil {
+		v := *raw.TotalTokens
+		out.TotalTokens = &v
+	}
+	if !out.HasUsage() {
 		return nil
 	}
 	return out
 }
 
-func (OpenAIResponsesObserver) ParseStreamEvent(event []byte) *ProviderUsage {
-	if len(event) == 0 {
-		return nil
-	}
-	for _, line := range splitSSELines(event) {
-		if len(line) == 0 {
-			continue
-		}
-		if !bytes.HasPrefix(line, []byte("data:")) {
-			continue
-		}
-		payload := bytes.TrimSpace(line[5:])
-		if len(payload) == 0 {
-			continue
-		}
-		if bytes.Equal(payload, []byte("[DONE]")) {
-			continue
-		}
-		var env struct {
-			Type  string                `json:"type"`
-			Usage *openAIResponsesUsage `json:"usage"`
-		}
-		if err := json.Unmarshal(payload, &env); err != nil {
-			continue
-		}
-		if env.Type != "response.completed" && env.Type != "response.done" && env.Type != "response.usage" {
-			if env.Usage == nil {
-				continue
-			}
-		}
-		if usage := buildProviderUsage(env.Usage); usage != nil {
-			return usage
-		}
-	}
-	return nil
+func (OpenAIResponsesObserver) NewStreamState() any {
+	return newOpenAIStreamState()
 }
 
 func (OpenAIResponsesObserver) MaxStreamEventBytes() int {
 	return maxSSEResponseEventBytes
+}
+
+type openAIStreamState struct {
+	snapshot openAIResponsesUsage
+	terminal bool
+}
+
+func newOpenAIStreamState() *openAIStreamState { return &openAIStreamState{} }
+
+func (OpenAIResponsesObserver) ParseStreamFrame(state any, payload []byte) (*ProviderUsage, bool) {
+	st, _ := state.(*openAIStreamState)
+	if st == nil {
+		st = newOpenAIStreamState()
+	}
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return nil, st.terminal
+	}
+	var env struct {
+		Type  string                `json:"type"`
+		Usage *openAIResponsesUsage `json:"usage"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return nil, st.terminal
+	}
+	switch env.Type {
+	case "response.completed", "response.done", "response.usage":
+		st.terminal = true
+	}
+	if env.Usage != nil {
+		st.snapshot = mergeOpenAIUsage(st.snapshot, env.Usage)
+	}
+	if pu := buildOpenAIProviderUsage(&st.snapshot); pu != nil {
+		return pu, st.terminal
+	}
+	return nil, st.terminal
+}
+
+func mergeOpenAIUsage(existing openAIResponsesUsage, next *openAIResponsesUsage) openAIResponsesUsage {
+	out := existing
+	if next.InputTokens != nil {
+		v := *next.InputTokens
+		out.InputTokens = &v
+	}
+	if next.OutputTokens != nil {
+		v := *next.OutputTokens
+		out.OutputTokens = &v
+	}
+	if next.TotalTokens != nil {
+		v := *next.TotalTokens
+		out.TotalTokens = &v
+	}
+	if next.InputTokensDetails != nil {
+		det := openAIResponsesInputDetails{}
+		if next.InputTokensDetails.CachedTokens != nil {
+			v := *next.InputTokensDetails.CachedTokens
+			det.CachedTokens = &v
+		}
+		out.InputTokensDetails = &det
+	}
+	if next.OutputTokensDetails != nil {
+		det := openAIResponsesOutputDetails{}
+		if next.OutputTokensDetails.ReasoningTokens != nil {
+			v := *next.OutputTokensDetails.ReasoningTokens
+			det.ReasoningTokens = &v
+		}
+		out.OutputTokensDetails = &det
+	}
+	return out
 }
 
 const maxSSEResponseEventBytes = 1 * 1024 * 1024

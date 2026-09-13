@@ -248,20 +248,20 @@ func summarizeCallProviderUsage(exchange Exchange, request RequestSummary) (*Cal
 		return nil, nil, nil
 	}
 	out := &CallProviderUsage{Kind: "measured"}
-	if pu.Input != nil {
-		v := *pu.Input
+	if pu.InputTokens != nil {
+		v := *pu.InputTokens
 		out.Input = &v
 	}
-	if pu.CachedInput != nil {
-		v := *pu.CachedInput
+	if pu.CacheReadInputTokens != nil {
+		v := *pu.CacheReadInputTokens
 		out.CachedInput = &v
 	}
-	if pu.Output != nil {
-		v := *pu.Output
+	if pu.OutputTokens != nil {
+		v := *pu.OutputTokens
 		out.Output = &v
 	}
-	if pu.ReasoningOutput != nil {
-		v := *pu.ReasoningOutput
+	if pu.ReasoningOutputTokens != nil {
+		v := *pu.ReasoningOutputTokens
 		out.ReasoningOutput = &v
 	}
 	if out.Input != nil && out.CachedInput != nil {

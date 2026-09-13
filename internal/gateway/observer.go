@@ -23,7 +23,8 @@ type ResponseObserver interface {
 }
 
 type StreamUsageObserver interface {
-	ParseStreamEvent(event []byte) *ProviderUsage
+	NewStreamState() any
+	ParseStreamFrame(state any, payload []byte) (*ProviderUsage, bool)
 	MaxStreamEventBytes() int
 }
 

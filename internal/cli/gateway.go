@@ -29,6 +29,7 @@ func newGatewayCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 	cmd.AddCommand(newGatewayInspectCommand(stdout, tok))
 	cmd.AddCommand(newGatewayChainsCommand(stdout, tok))
 	cmd.AddCommand(newGatewayChainCommand(stdout, tok))
+	cmd.AddCommand(newGatewayReportCommand(stdout, tok))
 	cmd.AddCommand(newGatewayServeCommand(ctx, tok))
 	return cmd
 }
@@ -283,6 +284,35 @@ func newGatewayChainCommand(stdout io.Writer, tok *app.App) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&profileName, "profile", "", "profile the chain was captured under (required)")
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
+	return cmd
+}
+
+func newGatewayReportCommand(stdout io.Writer, tok *app.App) *cobra.Command {
+	var (
+		profileName string
+		format      string
+	)
+	cmd := &cobra.Command{
+		Use:   "report",
+		Short: "Show profile-scoped request and usage accounting independent of chains",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			account, err := tok.GatewayReport(profileName)
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "terminal":
+				return gateway.RenderReport(stdout, account)
+			case "json":
+				return writeJSON(stdout, account)
+			default:
+				return fmt.Errorf("unsupported format %q", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&profileName, "profile", "", "profile to report on (required)")
 	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal or json")
 	return cmd
 }

@@ -569,6 +569,26 @@ func (a *App) GatewayChain(profileName, id string) (gateway.ChainSummary, error)
 	return gateway.FindChain(chains, id)
 }
 
+func (a *App) GatewayReport(profileName string) (gateway.ProfileAccount, error) {
+	if err := requireProfile(profileName); err != nil {
+		return gateway.ProfileAccount{}, err
+	}
+	if err := gateway.ValidateCaptureProfile(profileName); err != nil {
+		return gateway.ProfileAccount{}, err
+	}
+	recorder, err := a.openRecorder()
+	if err != nil {
+		return gateway.ProfileAccount{}, err
+	}
+	defer func() { _ = recorder.Close() }()
+	exchanges, err := gateway.Replay(recorder, profileName)
+	if err != nil {
+		return gateway.ProfileAccount{}, err
+	}
+	chainResult := gateway.NewChainBuilder().Build(exchanges)
+	return gateway.AccountProfile(profileName, exchanges, chainResult, nil), nil
+}
+
 func (a *App) openRecorder() (*gateway.FileRecorder, error) {
 	dir, err := gateway.DefaultDir()
 	if err != nil {

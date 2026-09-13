@@ -532,3 +532,103 @@ func truncateString(s string, n int) string {
 	}
 	return s[:n-1] + "…"
 }
+
+func RenderReport(w io.Writer, account ProfileAccount) error {
+	if _, err := fmt.Fprintf(w, "Gateway report %s\n\n", account.Profile); err != nil {
+		return err
+	}
+	c := account.Counts
+	if _, err := fmt.Fprintln(w, "Requests"); err != nil {
+		return err
+	}
+	rows := []struct {
+		label string
+		value string
+	}{
+		{"HTTP requests", formatInt(int64(c.HTTPRequests))},
+		{"Model requests", fmt.Sprintf("%d   (chained %d, uncorrelated %d)", c.ModelRequests, c.ChainedRequests, c.UncorrelatedReqs)},
+		{"Non-model requests", formatInt(int64(c.NonModelRequests))},
+		{"Recorder failures", formatInt(int64(c.RecorderFailures))},
+	}
+	for _, r := range rows {
+		if _, err := fmt.Fprintf(w, "  %-22s%s\n", r.label, r.value); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Outcomes"); err != nil {
+		return err
+	}
+	o := account.Outcomes
+	outcomeRows := []struct {
+		label string
+		value int
+	}{
+		{"upstream_ok", o.OutcomeUpstreamOK},
+		{"upstream_http_error", o.OutcomeUpstreamHTTPError},
+		{"transport_failure", o.OutcomeTransportFailure},
+		{"client_canceled", o.OutcomeClientCanceled},
+		{"stream_truncated", o.OutcomeStreamTruncated},
+		{"unknown", o.OutcomeUnknown},
+	}
+	for _, r := range outcomeRows {
+		if _, err := fmt.Fprintf(w, "  %-22s%d\n", r.label, r.value); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Measured usage (provider-reported)"); err != nil {
+		return err
+	}
+	if err := renderAggregate(w, "All model", account.Observed); err != nil {
+		return err
+	}
+	if err := renderAggregate(w, "Chained", account.Chained); err != nil {
+		return err
+	}
+	if err := renderAggregate(w, "Uncorrelated", account.Uncorrelated); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Completeness:        %s\n", account.Completeness); err != nil {
+		return err
+	}
+	return nil
+}
+
+func renderAggregate(w io.Writer, label string, agg ProfileUsageAggregate) error {
+	if _, err := fmt.Fprintf(w, "  %s (model=%d, observed=%d)\n", label, agg.ModelRequests, agg.Observed); err != nil {
+		return err
+	}
+	rows := []struct {
+		name  string
+		field FieldAggregate
+	}{
+		{"Raw input", agg.RawInput},
+		{"Cached", agg.Cached},
+		{"Cache creation", agg.CacheCreation},
+		{"Total input", agg.TotalInput},
+		{"Output", agg.Output},
+		{"Reasoning", agg.Reasoning},
+		{"Total", agg.Total},
+	}
+	for _, r := range rows {
+		if _, err := fmt.Fprintf(w, "    %-22s%s\n", r.name, fieldLabel(r.field)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func fieldLabel(f FieldAggregate) string {
+	if f.Count == 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%s (%d req)", formatInt(f.Sum), f.Count)
+}

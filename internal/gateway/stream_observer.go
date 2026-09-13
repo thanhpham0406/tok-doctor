@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"io"
 	"sync"
+
+	"github.com/thanhpham0406/tok-doctor/internal/model"
 )
 
 type streamObserver struct {
@@ -12,13 +14,15 @@ type streamObserver struct {
 	exchange *Exchange
 	recorder Recorder
 
-	once        sync.Once
-	mu          sync.Mutex
-	usage       *ProviderUsage
-	sawTerminal bool
-	overran     bool
+	once  sync.Once
+	mu    sync.Mutex
+	state any
 
-	maxEvent int
+	usage        *ProviderUsage
+	terminal     bool
+	overran      bool
+	recordCalled bool
+	maxEvent     int
 
 	pending []byte
 }
@@ -33,6 +37,7 @@ func newStreamObserver(observer StreamUsageObserver, upstream io.ReadCloser, rec
 		upstream: upstream,
 		exchange: exchange,
 		recorder: recorder,
+		state:    observer.NewStreamState(),
 		maxEvent: max,
 	}
 }
@@ -80,19 +85,33 @@ func (s *streamObserver) feed(frame []byte) {
 		s.overran = true
 		return
 	}
-	if len(frame) == 0 {
-		return
+	for _, payload := range extractDataPayloads(frame) {
+		s.mu.Lock()
+		usage, terminal := s.observer.ParseStreamFrame(s.state, payload)
+		if terminal {
+			s.terminal = true
+		}
+		if usage != nil {
+			s.usage = usage
+		}
+		s.mu.Unlock()
 	}
-	usage := s.observer.ParseStreamEvent(frame)
-	if usage == nil {
-		return
+}
+
+func extractDataPayloads(frame []byte) [][]byte {
+	var out [][]byte
+	for _, line := range splitSSELines(frame) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(line[len("data:"):])
+		if len(payload) == 0 {
+			continue
+		}
+		out = append(out, payload)
 	}
-	s.mu.Lock()
-	if !s.sawTerminal {
-		s.usage = usage
-		s.sawTerminal = true
-	}
-	s.mu.Unlock()
+	return out
 }
 
 func nextSSEFrame(buf []byte) (_, end int, hasFrame bool) {
@@ -110,17 +129,35 @@ func (s *streamObserver) finalize() {
 		s.drainFrames()
 		s.mu.Lock()
 		usage := s.usage
+		terminal := s.terminal
 		s.pending = nil
 		s.mu.Unlock()
-		if s.exchange == nil || s.recorder == nil {
+		if s.exchange == nil {
 			return
 		}
 		if usage != nil {
 			s.exchange.Response.ProviderUsage = usage
-			ApplyProviderUsageToExchange(s.exchange)
 		}
-		s.recorder.Record(*s.exchange)
+		if !terminal && streamRequiresTerminal(s.observer) {
+			s.exchange.Outcome = OutcomeStreamTruncated
+			if s.exchange.Response.Usage == nil {
+				s.exchange.Response.Usage = &ObservedUsage{Source: providerUsageKind(usage)}
+			}
+			s.exchange.Response.Usage.Truncated = true
+		} else {
+			s.exchange.Outcome = OutcomeUpstreamOK
+		}
+		ProviderUsageToObservedApply(s.exchange)
+		s.record()
 	})
+}
+
+func (s *streamObserver) record() {
+	if s.recorder == nil || s.recordCalled {
+		return
+	}
+	s.recordCalled = true
+	_ = s.recorder.Record(*s.exchange)
 }
 
 func (s *streamObserver) Close() error {
@@ -137,4 +174,48 @@ func (s *streamObserver) Usage() *ProviderUsage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.usage
+}
+
+func streamRequiresTerminal(observer StreamUsageObserver) bool {
+	switch observer.(type) {
+	case AnthropicMessagesObserver:
+		return true
+	default:
+		return false
+	}
+}
+
+// ProviderUsageToObservedApply writes a derived ObservedUsage into the
+// exchange without overwriting a field the caller has already populated.
+func ProviderUsageToObservedApply(exchange *Exchange) {
+	if exchange == nil || exchange.Response.ProviderUsage == nil {
+		return
+	}
+	observed := ProviderUsageToObserved(exchange.Response.ProviderUsage)
+	if exchange.Response.Usage == nil {
+		exchange.Response.Usage = &observed
+		return
+	}
+	if exchange.Response.Usage.RawInput == 0 && observed.RawInput != 0 {
+		exchange.Response.Usage.RawInput = observed.RawInput
+	}
+	if exchange.Response.Usage.Cached == 0 && observed.Cached != 0 {
+		exchange.Response.Usage.Cached = observed.Cached
+	}
+	if exchange.Response.Usage.CacheCreation == 0 && observed.CacheCreation != 0 {
+		exchange.Response.Usage.CacheCreation = observed.CacheCreation
+	}
+	if exchange.Response.Usage.Output == 0 && observed.Output != 0 {
+		exchange.Response.Usage.Output = observed.Output
+	}
+	if exchange.Response.Usage.Reasoning == 0 && observed.Reasoning != 0 {
+		exchange.Response.Usage.Reasoning = observed.Reasoning
+	}
+}
+
+func providerUsageKind(p *ProviderUsage) model.MeasurementKind {
+	if p == nil {
+		return model.MeasurementDerived
+	}
+	return model.MeasurementMeasured
 }
