@@ -94,7 +94,15 @@ A request that fails can still be completely observed, because the gateway
 finished observing a failure even when the provider reported no usage. For
 example, an upstream HTTP error is `provider_error` + `complete`: the outcome is
 a failure, but nothing about that failure is missing. Only `truncated` forces
-`partial`; an unknown outcome forces `unknown`.
+`partial`.
+
+Outcome and completeness are independent: one never forces the other as a
+contract invariant. In the current gateway projection, an unknown gateway
+outcome yields `unknown` completeness because that adapter has no other
+completeness evidence. That is an adapter policy, not a global rule. A persisted
+session transcript can report `outcome=unknown` together with
+`completeness=complete`, because the transcript may contain full token usage
+while providing no request outcome.
 
 Completeness is reported by the adapter. The canonical model never infers it.
 
