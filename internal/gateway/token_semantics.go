@@ -3,68 +3,76 @@ package gateway
 import "github.com/thanhpham0406/tok-doctor/internal/model"
 
 func ProviderUsageToObserved(p *ProviderUsage) ObservedUsage {
-	out := ObservedUsage{Source: model.MeasurementMeasured}
 	if p == nil {
-		return out
+		return ObservedUsage{Source: model.MeasurementDerived}
 	}
-	inputIncludesCache := inputSourceIncludesCache(p.Source)
-	if p.CacheReadInputTokens != nil {
-		v := *p.CacheReadInputTokens
-		out.Cached = v
+	switch p.Source {
+	case string(ProtocolAnthropicMessages):
+		out := ObservedUsage{Source: model.MeasurementMeasured}
+		if p.CacheReadInputTokens != nil {
+			out.Cached = *p.CacheReadInputTokens
+		}
+		if p.CacheCreationInputTokens != nil {
+			out.CacheCreation = *p.CacheCreationInputTokens
+		}
 		if p.InputTokens != nil {
-			raw := *p.InputTokens
-			out.RawInput = raw
-			if inputIncludesCache {
-				out.TotalInput = raw
-				if p.CacheCreationInputTokens == nil {
-					out.RawInput = raw - v
-				}
-			} else {
-				out.TotalInput = out.RawInput + out.Cached
-			}
+			out.RawInput = *p.InputTokens
+			out.TotalInput = out.RawInput + out.Cached + out.CacheCreation
 		} else if p.TotalInputTokens != nil {
 			out.TotalInput = *p.TotalInputTokens
-			out.RawInput = out.TotalInput - out.Cached
 		}
-	} else if p.TotalInputTokens != nil {
-		out.TotalInput = *p.TotalInputTokens
-		out.RawInput = out.TotalInput - out.Cached
-	} else if p.InputTokens != nil {
-		out.RawInput = *p.InputTokens
-		out.TotalInput = out.RawInput
-	}
-	if p.CacheCreationInputTokens != nil {
-		v := *p.CacheCreationInputTokens
-		out.CacheCreation = v
-		if !inputIncludesCache {
-			out.TotalInput = out.RawInput + out.Cached + out.CacheCreation
-		} else {
-			out.TotalInput = out.RawInput + out.CacheCreation
+		if p.OutputTokens != nil {
+			out.Output = *p.OutputTokens
 		}
-	}
-	if p.OutputTokens != nil {
-		out.Output = *p.OutputTokens
-	}
-	if p.ReasoningOutputTokens != nil {
-		out.Reasoning = *p.ReasoningOutputTokens
-	}
-	if p.TotalInputTokens != nil {
-		out.TotalInput = *p.TotalInputTokens
-	}
-	if p.TotalTokens != nil {
-		out.Total = *p.TotalTokens
-	} else {
+		if p.ReasoningOutputTokens != nil {
+			out.Reasoning = *p.ReasoningOutputTokens
+		}
 		out.Total = out.TotalInput + out.Output
+		return out
+	case string(ProtocolOpenAIResponses):
+		out := ObservedUsage{Source: model.MeasurementMeasured}
+		if p.InputTokens != nil {
+			out.TotalInput = *p.InputTokens
+		}
+		if p.TotalInputTokens != nil {
+			out.TotalInput = *p.TotalInputTokens
+		}
+		if p.CacheReadInputTokens != nil {
+			out.Cached = *p.CacheReadInputTokens
+		}
+		fresh := out.TotalInput - out.Cached
+		if fresh < 0 {
+			fresh = 0
+		}
+		out.RawInput = fresh
+		if p.OutputTokens != nil {
+			out.Output = *p.OutputTokens
+		}
+		if p.ReasoningOutputTokens != nil {
+			out.Reasoning = *p.ReasoningOutputTokens
+		}
+		if p.TotalTokens != nil {
+			out.Total = *p.TotalTokens
+		} else {
+			out.Total = out.TotalInput + out.Output
+		}
+		return out
+	default:
+		out := ObservedUsage{Source: model.MeasurementDerived}
+		if p.OutputTokens != nil {
+			out.Output = *p.OutputTokens
+		}
+		if p.ReasoningOutputTokens != nil {
+			out.Reasoning = *p.ReasoningOutputTokens
+		}
+		if p.TotalInputTokens != nil {
+			out.TotalInput = *p.TotalInputTokens
+		}
+		if p.TotalTokens != nil {
+			out.Total = *p.TotalTokens
+		}
+		return out
 	}
-	return out
-}
-
-func inputSourceIncludesCache(source string) bool {
-	switch source {
-	case "openai_responses":
-		return true
-	}
-	return false
 }
 
 func ProviderUsageAdd(dst, src *ProviderUsage) *ProviderUsage {
@@ -101,4 +109,72 @@ func addInt64Ptr(a, b *int64) *int64 {
 
 func (p *ProviderUsage) HasUsage() bool {
 	return p != nil && p.ReportedFields() > 0
+}
+
+// providerFieldKinds describes the provenance of each canonical provider
+// field: direct provider reports keep measured provenance, derived values
+// (sums or gaps) keep derived provenance, and unrecognized schemas stay
+// derived so unknown fields are never promoted to measured.
+type providerFieldKinds struct {
+	Fresh         model.MeasurementKind
+	Cached        model.MeasurementKind
+	CacheCreation model.MeasurementKind
+	TotalInput    model.MeasurementKind
+	Output        model.MeasurementKind
+	Reasoning     model.MeasurementKind
+	Total         model.MeasurementKind
+}
+
+func providerFieldKindsFor(pu *ProviderUsage) providerFieldKinds {
+	measured := model.MeasurementMeasured
+	derived := model.MeasurementDerived
+	if pu == nil {
+		return providerFieldKinds{
+			Fresh: derived, Cached: derived, CacheCreation: derived,
+			TotalInput: derived, Output: derived, Reasoning: derived, Total: derived,
+		}
+	}
+	switch pu.Source {
+	case string(ProtocolAnthropicMessages):
+		out := providerFieldKinds{
+			Fresh:         measured,
+			Cached:        measured,
+			CacheCreation: measured,
+			Output:        measured,
+			Reasoning:     measured,
+			TotalInput:    derived,
+			Total:         derived,
+		}
+		if pu.TotalInputTokens != nil {
+			out.TotalInput = measured
+		}
+		if pu.TotalTokens != nil {
+			out.Total = measured
+		}
+		return out
+	case string(ProtocolOpenAIResponses):
+		out := providerFieldKinds{
+			Cached:        measured,
+			CacheCreation: measured,
+			TotalInput:    measured,
+			Output:        measured,
+			Reasoning:     measured,
+			Fresh:         derived,
+			Total:         derived,
+		}
+		if pu.TotalTokens != nil {
+			out.Total = measured
+		}
+		return out
+	default:
+		return providerFieldKinds{
+			Fresh:         derived,
+			Cached:        derived,
+			CacheCreation: derived,
+			TotalInput:    derived,
+			Output:        derived,
+			Reasoning:     derived,
+			Total:         derived,
+		}
+	}
 }

@@ -42,14 +42,16 @@ type RequestSummary struct {
 }
 
 type RequestProviderSummary struct {
-	Input           *int64                    `json:"input,omitempty"`
-	CachedInput     *int64                    `json:"cachedInput,omitempty"`
-	FreshInput      *int64                    `json:"freshInput,omitempty"`
-	Output          *int64                    `json:"output,omitempty"`
-	ReasoningOutput *int64                    `json:"reasoningOutput,omitempty"`
-	Kind            string                    `json:"kind,omitempty"`
-	Gap             *model.Measurement        `json:"gap,omitempty"`
-	Coverage        *AttributionCoverageValue `json:"coverage,omitempty"`
+	FreshInput         *int64                    `json:"freshInput,omitempty"`
+	CachedInput        *int64                    `json:"cachedInput,omitempty"`
+	CacheCreationInput *int64                    `json:"cacheCreationInput,omitempty"`
+	TotalInput         *int64                    `json:"totalInput,omitempty"`
+	Output             *int64                    `json:"output,omitempty"`
+	ReasoningOutput    *int64                    `json:"reasoningOutput,omitempty"`
+	Total              *int64                    `json:"total,omitempty"`
+	Kind               string                    `json:"kind,omitempty"`
+	Gap                *model.Measurement        `json:"gap,omitempty"`
+	Coverage           *AttributionCoverageValue `json:"coverage,omitempty"`
 }
 
 func SummarizeRequest(e Exchange) RequestSummary {
@@ -101,37 +103,77 @@ func buildRequestProviderSummary(e Exchange, attributed model.Measurement) *Requ
 	if pu == nil {
 		return nil
 	}
-	out := &RequestProviderSummary{Kind: "measured"}
-	if pu.InputTokens != nil {
-		v := *pu.InputTokens
-		out.Input = &v
-	}
-	if pu.CacheReadInputTokens != nil {
-		v := *pu.CacheReadInputTokens
-		out.CachedInput = &v
+	observed := ProviderUsageToObserved(pu)
+	k := providerFieldKindsFor(pu)
+	out := &RequestProviderSummary{Kind: providerSummaryKind(pu)}
+	switch pu.Source {
+	case string(ProtocolAnthropicMessages):
+		if pu.InputTokens != nil {
+			v := observed.RawInput
+			out.FreshInput = &v
+		}
+		if pu.CacheReadInputTokens != nil {
+			v := observed.Cached
+			out.CachedInput = &v
+		}
+		if pu.CacheCreationInputTokens != nil {
+			v := observed.CacheCreation
+			out.CacheCreationInput = &v
+		}
+		if pu.InputTokens != nil || pu.TotalInputTokens != nil {
+			v := observed.TotalInput
+			out.TotalInput = &v
+		}
+	case string(ProtocolOpenAIResponses):
+		if pu.InputTokens != nil {
+			v := observed.TotalInput
+			out.TotalInput = &v
+		}
+		if pu.CacheReadInputTokens != nil {
+			v := observed.Cached
+			out.CachedInput = &v
+			if pu.InputTokens != nil {
+				fresh := observed.RawInput
+				out.FreshInput = &fresh
+			}
+		}
+	default:
+		if pu.TotalInputTokens != nil {
+			v := observed.TotalInput
+			out.TotalInput = &v
+		}
 	}
 	if pu.OutputTokens != nil {
-		v := *pu.OutputTokens
+		v := observed.Output
 		out.Output = &v
 	}
 	if pu.ReasoningOutputTokens != nil {
-		v := *pu.ReasoningOutputTokens
+		v := observed.Reasoning
 		out.ReasoningOutput = &v
 	}
-	if out.Input != nil && out.CachedInput != nil {
-		fresh := *out.Input - *out.CachedInput
-		out.FreshInput = &fresh
+	if pu.OutputTokens != nil || pu.TotalTokens != nil {
+		v := observed.Total
+		out.Total = &v
 	}
-	if out.Input == nil && out.CachedInput == nil && out.Output == nil && out.ReasoningOutput == nil {
+	if out.FreshInput == nil && out.CachedInput == nil && out.CacheCreationInput == nil &&
+		out.TotalInput == nil && out.Output == nil && out.ReasoningOutput == nil && out.Total == nil {
 		return nil
 	}
-	if out.Input != nil && attributed.Available() {
-		provider := model.NewMeasurement(*out.Input, model.MeasurementMeasured)
+	if out.TotalInput != nil && *out.TotalInput > 0 && attributed.Available() {
+		provider := model.NewMeasurement(*out.TotalInput, k.TotalInput)
 		gap := subtractMetric(provider, attributed)
 		out.Gap = &gap
 		out.Coverage = computeCoverage(attributed, provider, attributed.Kind)
 	}
 	return out
+}
+
+func providerSummaryKind(pu *ProviderUsage) string {
+	switch pu.Source {
+	case string(ProtocolAnthropicMessages), string(ProtocolOpenAIResponses):
+		return "measured"
+	}
+	return "derived"
 }
 
 func summaryMeasurement(c model.ContextComponent) model.Measurement {

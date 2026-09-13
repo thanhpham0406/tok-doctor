@@ -183,7 +183,7 @@ func openAIFilePath(raw json.RawMessage) string {
 	return s.Name
 }
 
-func (OpenAIResponsesObserver) ParseResponse(body []byte) *OpenAIResponsesResponseMeta {
+func (OpenAIResponsesObserver) ParseResponse(body []byte) *ResponseMetadata {
 	if len(body) == 0 {
 		return nil
 	}
@@ -193,6 +193,10 @@ func (OpenAIResponsesObserver) ParseResponse(body []byte) *OpenAIResponsesRespon
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil
+	}
+	out := &ResponseMetadata{}
+	if resp.ID != "" {
+		out.ResponseObjectID = resp.ID
 	}
 	meta := &OpenAIResponsesResponseMeta{}
 	if resp.ID != "" {
@@ -210,10 +214,13 @@ func (OpenAIResponsesObserver) ParseResponse(body []byte) *OpenAIResponsesRespon
 			meta.OutputItemCallIDs = append(meta.OutputItemCallIDs, item.CallID)
 		}
 	}
-	if meta.ResponseID == "" && len(meta.OutputItemCallIDs) == 0 {
+	if meta.ResponseID != "" || len(meta.OutputItemCallIDs) > 0 {
+		out.OpenAIResponses = meta
+	}
+	if out.ResponseObjectID == "" && out.OpenAIResponses == nil {
 		return nil
 	}
-	return meta
+	return out
 }
 
 func (OpenAIResponsesObserver) ParseResponseUsage(body []byte) *ProviderUsage {
@@ -285,38 +292,50 @@ func (OpenAIResponsesObserver) MaxStreamEventBytes() int {
 }
 
 type openAIStreamState struct {
-	snapshot openAIResponsesUsage
-	terminal bool
+	snapshot   openAIResponsesUsage
+	terminal   bool
+	responseID string
 }
 
 func newOpenAIStreamState() *openAIStreamState { return &openAIStreamState{} }
 
-func (OpenAIResponsesObserver) ParseStreamFrame(state any, payload []byte) (*ProviderUsage, bool) {
+func (OpenAIResponsesObserver) ParseStreamFrame(state any, payload []byte) StreamFrameObservation {
 	st, _ := state.(*openAIStreamState)
 	if st == nil {
 		st = newOpenAIStreamState()
 	}
 	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-		return nil, st.terminal
+		return StreamFrameObservation{ResponseObjectID: st.responseID, Terminal: st.terminal}
 	}
 	var env struct {
-		Type  string                `json:"type"`
+		Type     string `json:"type"`
+		Response *struct {
+			ID string `json:"id"`
+		} `json:"response"`
 		Usage *openAIResponsesUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(payload, &env); err != nil {
-		return nil, st.terminal
+		return StreamFrameObservation{ResponseObjectID: st.responseID, Terminal: st.terminal}
 	}
 	switch env.Type {
 	case "response.completed", "response.done", "response.usage":
 		st.terminal = true
 	}
+	if env.Response != nil && env.Response.ID != "" {
+		st.responseID = env.Response.ID
+	}
 	if env.Usage != nil {
 		st.snapshot = mergeOpenAIUsage(st.snapshot, env.Usage)
 	}
-	if pu := buildOpenAIProviderUsage(&st.snapshot); pu != nil {
-		return pu, st.terminal
+	var usage *ProviderUsage
+	if buildOpenAIProviderUsage(&st.snapshot) != nil {
+		usage = buildOpenAIProviderUsage(&st.snapshot)
 	}
-	return nil, st.terminal
+	return StreamFrameObservation{
+		Usage:            usage,
+		ResponseObjectID: st.responseID,
+		Terminal:         st.terminal,
+	}
 }
 
 func mergeOpenAIUsage(existing openAIResponsesUsage, next *openAIResponsesUsage) openAIResponsesUsage {

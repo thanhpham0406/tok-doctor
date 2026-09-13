@@ -19,21 +19,32 @@ type anthropicEnvelopeSSELine struct {
 }
 
 type anthropicMessageStart struct {
+	ID    string                  `json:"id"`
 	Usage *anthropicMessagesUsage `json:"usage"`
 }
 
 type anthropicStreamState struct {
-	snapshot anthropicMessagesUsage
-	started  bool
-	stopped  bool
+	snapshot  anthropicMessagesUsage
+	started   bool
+	stopped   bool
+	messageID string
 }
 
 func newAnthropicStreamState() *anthropicStreamState {
 	return &anthropicStreamState{}
 }
 
-func (AnthropicMessagesObserver) ParseResponse(body []byte) *OpenAIResponsesResponseMeta {
-	return nil
+func (AnthropicMessagesObserver) ParseResponse(body []byte) *ResponseMetadata {
+	if len(body) == 0 {
+		return nil
+	}
+	var env struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil || env.ID == "" {
+		return nil
+	}
+	return &ResponseMetadata{ResponseObjectID: env.ID}
 }
 
 func (AnthropicMessagesObserver) ParseResponseUsage(body []byte) *ProviderUsage {
@@ -57,23 +68,29 @@ func (AnthropicMessagesObserver) MaxStreamEventBytes() int {
 	return maxSSEResponseEventBytes
 }
 
-func (AnthropicMessagesObserver) ParseStreamFrame(state any, payload []byte) (*ProviderUsage, bool) {
+func (AnthropicMessagesObserver) ParseStreamFrame(state any, payload []byte) StreamFrameObservation {
 	st, _ := state.(*anthropicStreamState)
 	if st == nil {
 		st = newAnthropicStreamState()
 	}
 	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-		return nil, false
+		return StreamFrameObservation{ResponseObjectID: st.messageID, Terminal: st.stopped}
 	}
 	var env anthropicEnvelopeSSELine
 	if err := json.Unmarshal(payload, &env); err != nil {
-		return nil, false
+		// A malformed frame must not clear the message ID captured earlier.
+		return StreamFrameObservation{ResponseObjectID: st.messageID, Terminal: st.stopped}
 	}
 	switch env.Type {
 	case "message_start":
 		st.started = true
-		if env.Message != nil && env.Message.Usage != nil {
-			st.snapshot = mergeAnthropicUsage(st.snapshot, env.Message.Usage)
+		if env.Message != nil {
+			if env.Message.ID != "" {
+				st.messageID = env.Message.ID
+			}
+			if env.Message.Usage != nil {
+				st.snapshot = mergeAnthropicUsage(st.snapshot, env.Message.Usage)
+			}
 		}
 		if env.Usage != nil {
 			st.snapshot = mergeAnthropicUsage(st.snapshot, env.Usage)
@@ -85,13 +102,18 @@ func (AnthropicMessagesObserver) ParseStreamFrame(state any, payload []byte) (*P
 	case "message_stop":
 		st.stopped = true
 	default:
-		return nil, st.stopped
+		return StreamFrameObservation{ResponseObjectID: st.messageID, Terminal: st.stopped}
 	}
-	if st.snapshot.InputTokens == nil && st.snapshot.OutputTokens == nil &&
-		st.snapshot.CacheCreationInputTokens == nil && st.snapshot.CacheReadInputTokens == nil {
-		return nil, st.stopped
+	var usage *ProviderUsage
+	if st.snapshot.InputTokens != nil || st.snapshot.OutputTokens != nil ||
+		st.snapshot.CacheCreationInputTokens != nil || st.snapshot.CacheReadInputTokens != nil {
+		usage = anthropicBuildProviderUsage(&st.snapshot)
 	}
-	return anthropicBuildProviderUsage(&st.snapshot), st.stopped
+	return StreamFrameObservation{
+		Usage:            usage,
+		ResponseObjectID: st.messageID,
+		Terminal:         st.stopped,
+	}
 }
 
 func mergeAnthropicUsage(existing anthropicMessagesUsage, next *anthropicMessagesUsage) anthropicMessagesUsage {

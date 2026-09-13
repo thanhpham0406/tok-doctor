@@ -8,8 +8,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thanhpham0406/tok-doctor/internal/config"
+	"github.com/thanhpham0406/tok-doctor/internal/gateway"
 	"github.com/thanhpham0406/tok-doctor/internal/model"
 	"github.com/thanhpham0406/tok-doctor/internal/source"
 )
@@ -552,5 +554,71 @@ func TestInspectFullIDWinsOverPrefix(t *testing.T) {
 	}
 	if got.ID != "abc123" {
 		t.Fatalf("session ID = %q, want abc123 (exact match)", got.ID)
+	}
+}
+
+func TestApp_GatewayReport_ReadsPersistedFailures(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", dir)
+
+	if err := os.Mkdir(filepath.Join(dir, "p.jsonl"), 0o755); err != nil {
+		t.Fatalf("seed capture conflict: %v", err)
+	}
+	rec, err := gateway.NewFileRecorder(dir)
+	if err != nil {
+		t.Fatalf("recorder: %v", err)
+	}
+	for _, id := range []string{"gw-a", "gw-b", "gw-c"} {
+		if err := rec.Record(gateway.Exchange{ID: id, Profile: "p", StartedAt: time.Now()}); err == nil {
+			t.Fatalf("Record %s should fail", id)
+		}
+	}
+	if _, err := rec.RecorderFailures("p"); err != nil {
+		t.Fatalf("read failure journal: %v", err)
+	}
+	_ = rec.Close()
+
+	// Report must read the journal independently of the capture file: the
+	// capture path conflict is removed and replaced with an empty capture.
+	if err := os.Remove(filepath.Join(dir, "p.jsonl")); err != nil {
+		t.Fatalf("clear capture conflict: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "p.jsonl"), nil, 0o600); err != nil {
+		t.Fatalf("recreate capture: %v", err)
+	}
+
+	a := &App{}
+	account, err := a.GatewayReport("p")
+	if err != nil {
+		t.Fatalf("GatewayReport: %v", err)
+	}
+	if account.Counts.RecorderFailures != 3 {
+		t.Fatalf("RecorderFailures = %d, want 3 (one per Record, no duplicates)", account.Counts.RecorderFailures)
+	}
+	if len(account.RecorderFailures) != 3 {
+		t.Fatalf("RecorderFailures len = %d, want 3", len(account.RecorderFailures))
+	}
+	if account.Completeness != "partial" {
+		t.Fatalf("Completeness = %q, want partial", account.Completeness)
+	}
+	if account.SchemaVersion != 1 {
+		t.Fatalf("SchemaVersion = %d, want 1", account.SchemaVersion)
+	}
+}
+
+func TestApp_GatewayReport_ZeroFailuresWhenClean(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TOKDOCTOR_GATEWAY_DIR", dir)
+
+	a := &App{}
+	account, err := a.GatewayReport("clean-profile")
+	if err != nil {
+		t.Fatalf("GatewayReport: %v", err)
+	}
+	if account.Counts.RecorderFailures != 0 {
+		t.Fatalf("RecorderFailures = %d, want 0", account.Counts.RecorderFailures)
+	}
+	if len(account.RecorderFailures) != 0 {
+		t.Fatalf("RecorderFailures len = %d, want 0", len(account.RecorderFailures))
 	}
 }

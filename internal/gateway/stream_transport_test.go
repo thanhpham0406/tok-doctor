@@ -13,7 +13,7 @@ import (
 
 func readStreamThroughObserver(t *testing.T, upstream io.Reader, bufferSize int) []byte {
 	t.Helper()
-	streamer := newStreamObserver(OpenAIResponsesObserver{}, io.NopCloser(upstream), nil, nil)
+	streamer := newStreamObserver(OpenAIResponsesObserver{}, io.NopCloser(upstream), nil, nil, nil)
 	var got []byte
 	buf := make([]byte, bufferSize)
 	for {
@@ -37,7 +37,7 @@ func readStreamThroughObserver(t *testing.T, upstream io.Reader, bufferSize int)
 func readStreamAndCapture(t *testing.T, upstream io.Reader, bufferSize int) (*streamObserver, []byte) {
 	t.Helper()
 	ex := Exchange{ID: "gw-x", Profile: "p", Protocol: ProtocolOpenAIResponses}
-	streamer := newStreamObserver(OpenAIResponsesObserver{}, io.NopCloser(upstream), nil, &ex)
+	streamer := newStreamObserver(OpenAIResponsesObserver{}, io.NopCloser(upstream), nil, nil, &ex)
 	var got []byte
 	buf := make([]byte, bufferSize)
 	for {
@@ -187,7 +187,7 @@ func TestStreamObserver_CloseBeforeEOFIsIdempotent(t *testing.T) {
 	}
 	defer func() { _ = rec.Close() }()
 	ex := Exchange{ID: "gw-close", Profile: "p", Protocol: ProtocolOpenAIResponses}
-	streamer := newStreamObserver(OpenAIResponsesObserver{}, io.NopCloser(bytes.NewReader(terminal)), rec, &ex)
+	streamer := newStreamObserver(OpenAIResponsesObserver{}, io.NopCloser(bytes.NewReader(terminal)), rec, nil, &ex)
 	buf := make([]byte, 4096)
 	if _, err := streamer.Read(buf); err != nil {
 		t.Fatalf("read: %v", err)
@@ -212,7 +212,7 @@ func TestStreamObserver_CloseBeforeEOFIsIdempotent(t *testing.T) {
 
 func TestStreamObserver_UpstreamEOFPropagated(t *testing.T) {
 	ex := Exchange{ID: "gw-eof", Profile: "p", Protocol: ProtocolOpenAIResponses}
-	streamer := newStreamObserver(OpenAIResponsesObserver{}, io.NopCloser(&emptyEOFReader{}), nil, &ex)
+	streamer := newStreamObserver(OpenAIResponsesObserver{}, io.NopCloser(&emptyEOFReader{}), nil, nil, &ex)
 	buf := make([]byte, 16)
 	n, err := streamer.Read(buf)
 	if n != 0 || !errors.Is(err, io.EOF) {
@@ -229,7 +229,7 @@ func TestStreamObserver_RecordingExactlyOnce(t *testing.T) {
 	}
 	defer func() { _ = rec.Close() }()
 	ex := Exchange{ID: "gw-once", Profile: "p", Protocol: ProtocolOpenAIResponses}
-	streamer := newStreamObserver(OpenAIResponsesObserver{}, io.NopCloser(bytes.NewReader(terminal)), rec, &ex)
+	streamer := newStreamObserver(OpenAIResponsesObserver{}, io.NopCloser(bytes.NewReader(terminal)), rec, nil, &ex)
 	buf := make([]byte, 4096)
 	for {
 		_, err := streamer.Read(buf)
@@ -255,7 +255,7 @@ func TestStreamObserver_RecordingExactlyOnce(t *testing.T) {
 func TestStreamObserver_UpstreamReadErrorPropagated(t *testing.T) {
 	expected := errors.New("upstream boom")
 	ex := Exchange{ID: "gw-err", Profile: "p", Protocol: ProtocolOpenAIResponses}
-	streamer := newStreamObserver(OpenAIResponsesObserver{}, io.NopCloser(&erringReader{err: expected}), nil, &ex)
+	streamer := newStreamObserver(OpenAIResponsesObserver{}, io.NopCloser(&erringReader{err: expected}), nil, nil, &ex)
 	buf := make([]byte, 16)
 	_, err := streamer.Read(buf)
 	if !errors.Is(err, expected) {

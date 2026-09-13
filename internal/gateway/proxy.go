@@ -110,14 +110,15 @@ func (p *Proxy) captureMiddleware(next http.Handler) http.Handler {
 		components := p.parseComponents(body)
 		metadata := p.parseMetadata(body)
 		exchange := Exchange{
-			ID:         newExchangeID(),
-			Profile:    p.Profile,
-			SourceHint: p.Source,
-			Protocol:   p.Protocol,
-			StartedAt:  start,
-			Upstream:   sanitisedUpstream(p.Upstream),
-			Kind:       classifyRequestKind(Protocol(p.Protocol), r.URL.Path, r.Method),
-			Outcome:    OutcomeUnknown,
+			SchemaVersion: ExchangeSchemaVersion,
+			ID:            newExchangeID(),
+			Profile:       p.Profile,
+			SourceHint:    p.Source,
+			Protocol:      p.Protocol,
+			StartedAt:     start,
+			Upstream:      sanitisedUpstream(p.Upstream),
+			Kind:          classifyRequestKind(Protocol(p.Protocol), r.URL.Path, r.Method),
+			Outcome:       OutcomeUnknown,
 			Request: ExchangeRequest{
 				Method:     r.Method,
 				Endpoint:   r.URL.Path,
@@ -197,7 +198,7 @@ func (p *Proxy) observeResponse(resp *http.Response) error {
 	exchange.Response.Status = resp.StatusCode
 	stream := strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
 	exchange.Response.Stream = stream
-	exchange.Response.ResponseID = firstNonEmpty(
+	exchange.Response.ProviderRequestID = firstNonEmpty(
 		resp.Header.Get("x-request-id"),
 		resp.Header.Get("request-id"),
 		resp.Header.Get("anthropic-request-id"),
@@ -217,9 +218,11 @@ func (p *Proxy) observeResponse(resp *http.Response) error {
 		}
 		if respObserver, hasResp := p.Observer.(ResponseObserver); hasResp && len(prefix) > 0 {
 			if meta := respObserver.ParseResponse(prefix); meta != nil {
-				exchange.Response.OpenAIResponses = meta
-				if meta.ResponseID != "" && exchange.Response.ResponseID == "" {
-					exchange.Response.ResponseID = meta.ResponseID
+				if meta.ResponseObjectID != "" && exchange.Response.ResponseObjectID == "" {
+					exchange.Response.ResponseObjectID = meta.ResponseObjectID
+				}
+				if meta.OpenAIResponses != nil {
+					exchange.Response.OpenAIResponses = meta.OpenAIResponses
 				}
 			}
 			if usage := respObserver.ParseResponseUsage(prefix); usage != nil {
@@ -233,7 +236,7 @@ func (p *Proxy) observeResponse(resp *http.Response) error {
 	}
 
 	if streamObserver, hasStream := p.Observer.(StreamUsageObserver); hasStream {
-		wrapper := newStreamObserver(streamObserver, resp.Body, p.Recorder, exchange)
+		wrapper := newStreamObserver(streamObserver, resp.Body, p.Recorder, p.Sink, exchange)
 		resp.Body = wrapper
 		exchange.Outcome = OutcomeUpstreamOK
 		ProviderUsageToObservedApply(exchange)

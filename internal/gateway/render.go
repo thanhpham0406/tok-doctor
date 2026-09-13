@@ -200,7 +200,7 @@ func hasAnyCallProviderUsage(calls []ChainCallSummary) bool {
 }
 
 func hasChainProviderAggregate(chain ChainSummary) bool {
-	return chain.ProviderInput != nil || chain.ProviderOutput != nil || chain.ProviderCachedInput != nil || chain.AttributionCoverage != nil
+	return chain.ProviderTotalInput != nil || chain.ProviderOutput != nil || chain.ProviderCachedInput != nil || chain.AttributionCoverage != nil
 }
 
 func renderChainProviderUsageTable(w io.Writer, calls []ChainCallSummary) error {
@@ -210,7 +210,7 @@ func renderChainProviderUsageTable(w io.Writer, calls []ChainCallSummary) error 
 	if _, err := fmt.Fprintln(w, "Provider usage"); err != nil {
 		return err
 	}
-	header := fmt.Sprintf("%-3s  %10s  %10s  %10s  %10s  %10s", "#", "Input", "Cached", "Fresh", "Output", "Coverage")
+	header := fmt.Sprintf("%-3s  %11s  %10s  %10s  %10s  %10s  %10s", "#", "TotalInput", "Cached", "Fresh", "Output", "Reasoning", "Coverage")
 	if _, err := fmt.Fprintln(w, header); err != nil {
 		return err
 	}
@@ -219,8 +219,8 @@ func renderChainProviderUsageTable(w io.Writer, calls []ChainCallSummary) error 
 	}
 	for _, call := range calls {
 		if call.ProviderUsage == nil {
-			if _, err := fmt.Fprintf(w, "%-3d  %10s  %10s  %10s  %10s  %10s\n",
-				call.Index, "—", "—", "—", "—", "—"); err != nil {
+			if _, err := fmt.Fprintf(w, "%-3d  %11s  %10s  %10s  %10s  %10s  %10s\n",
+				call.Index, "—", "—", "—", "—", "—", "—"); err != nil {
 				return err
 			}
 			continue
@@ -229,12 +229,13 @@ func renderChainProviderUsageTable(w io.Writer, calls []ChainCallSummary) error 
 		if call.AttributionCoverage != nil {
 			coverageStr = formatCoverage(call.AttributionCoverage, call.Context.Kind)
 		}
-		if _, err := fmt.Fprintf(w, "%-3d  %10s  %10s  %10s  %10s  %10s\n",
+		if _, err := fmt.Fprintf(w, "%-3d  %11s  %10s  %10s  %10s  %10s  %10s\n",
 			call.Index,
-			providerInt64OrDash(call.ProviderUsage.Input),
+			providerInt64OrDash(call.ProviderUsage.TotalInput),
 			providerInt64OrDash(call.ProviderUsage.CachedInput),
 			providerInt64OrDash(call.ProviderUsage.FreshInput),
 			providerInt64OrDash(call.ProviderUsage.Output),
+			providerInt64OrDash(call.ProviderUsage.ReasoningOutput),
 			coverageStr,
 		); err != nil {
 			return err
@@ -258,10 +259,12 @@ func renderChainProviderSummary(w io.Writer, chain ChainSummary) error {
 		label string
 		value string
 	}{
-		{"Provider input", formatOptionalMeasurement(chain.ProviderInput)},
+		{"Provider total input", formatOptionalMeasurement(chain.ProviderTotalInput)},
 		{"Cached input", formatOptionalMeasurement(chain.ProviderCachedInput)},
 		{"Fresh input", formatOptionalMeasurement(chain.ProviderFreshInput)},
+		{"Cache creation", formatOptionalMeasurement(chain.ProviderCacheCreationInput)},
 		{"Output", formatOptionalMeasurement(chain.ProviderOutput)},
+		{"Reasoning", formatOptionalMeasurement(chain.ProviderReasoning)},
 	}
 	for _, row := range rows {
 		if _, err := fmt.Fprintf(w, "%-22s%12s\n", row.label, row.value); err != nil {
@@ -362,11 +365,13 @@ func renderProviderUsage(w io.Writer, p *RequestProviderSummary) error {
 		label string
 		value string
 	}{
-		{"Input", providerTokenLabel(p.Input)},
-		{"Cached", providerTokenLabel(p.CachedInput)},
-		{"Fresh", providerTokenLabel(p.FreshInput)},
+		{"Fresh input", providerTokenLabel(p.FreshInput)},
+		{"Cached input", providerTokenLabel(p.CachedInput)},
+		{"Cache creation", providerTokenLabel(p.CacheCreationInput)},
+		{"Total input", providerTokenLabel(p.TotalInput)},
 		{"Output", providerTokenLabel(p.Output)},
 		{"Reasoning", providerTokenLabel(p.ReasoningOutput)},
+		{"Total", providerTokenLabel(p.Total)},
 	}
 	for _, row := range rows {
 		if _, err := fmt.Fprintf(w, "%-15s%12s\n", row.label, row.value); err != nil {
@@ -541,6 +546,10 @@ func RenderReport(w io.Writer, account ProfileAccount) error {
 	if _, err := fmt.Fprintln(w, "Requests"); err != nil {
 		return err
 	}
+	recorderFailures := formatInt(int64(c.RecorderFailures))
+	if account.RecorderFailuresTruncated {
+		recorderFailures += fmt.Sprintf("   (showing latest %d)", len(account.RecorderFailures))
+	}
 	rows := []struct {
 		label string
 		value string
@@ -548,7 +557,9 @@ func RenderReport(w io.Writer, account ProfileAccount) error {
 		{"HTTP requests", formatInt(int64(c.HTTPRequests))},
 		{"Model requests", fmt.Sprintf("%d   (chained %d, uncorrelated %d)", c.ModelRequests, c.ChainedRequests, c.UncorrelatedReqs)},
 		{"Non-model requests", formatInt(int64(c.NonModelRequests))},
-		{"Recorder failures", formatInt(int64(c.RecorderFailures))},
+		{"Unknown requests", formatInt(int64(c.UnknownRequests))},
+		{"Unclassified requests", formatInt(int64(c.UnclassifiedRequests))},
+		{"Recorder failures", recorderFailures},
 	}
 	for _, r := range rows {
 		if _, err := fmt.Fprintf(w, "  %-22s%s\n", r.label, r.value); err != nil {

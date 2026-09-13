@@ -88,32 +88,33 @@ type ChainCallSummary struct {
 }
 
 type ChainSummary struct {
-	ID                  string                    `json:"id"`
-	Profile             string                    `json:"profile,omitempty"`
-	Protocol            Protocol                  `json:"protocol,omitempty"`
-	Model               string                    `json:"model,omitempty"`
-	StartedAt           string                    `json:"startedAt,omitempty"`
-	ModelCalls          int                       `json:"modelCalls"`
-	Calls               []ChainCallSummary        `json:"calls,omitempty"`
-	TotalContextSent    model.Measurement         `json:"totalContext"`
-	InitialContext      model.Measurement         `json:"initialContext"`
-	PeakContext         model.Measurement         `json:"peakContext"`
-	FinalContext        model.Measurement         `json:"finalContext"`
-	ContextGrowth       model.Measurement         `json:"contextGrowth"`
-	LargestGrowth       model.Measurement         `json:"largestGrowth"`
-	LargestGrowthCall   int                       `json:"largestGrowthCall,omitempty"`
-	ToolResultsGrowth   model.Measurement         `json:"toolResultsGrowth"`
-	HistoryGrowth       model.Measurement         `json:"historyGrowth"`
-	ToolsGrowth         model.Measurement         `json:"toolsGrowth"`
-	ProviderInput       *model.Measurement        `json:"providerInput,omitempty"`
-	ProviderCachedInput *model.Measurement        `json:"providerCachedInput,omitempty"`
-	ProviderFreshInput  *model.Measurement        `json:"providerFreshInput,omitempty"`
-	ProviderOutput      *model.Measurement        `json:"providerOutput,omitempty"`
-	ProviderReasoning   *model.Measurement        `json:"providerReasoning,omitempty"`
-	UsageObservedCalls  *int                      `json:"usageObservedCalls,omitempty"`
-	UsageTotalCalls     *int                      `json:"usageTotalCalls,omitempty"`
-	AttributionGap      *model.Measurement        `json:"attributionGap,omitempty"`
-	AttributionCoverage *AttributionCoverageValue `json:"attributionCoverage,omitempty"`
+	ID                         string                    `json:"id"`
+	Profile                    string                    `json:"profile,omitempty"`
+	Protocol                   Protocol                  `json:"protocol,omitempty"`
+	Model                      string                    `json:"model,omitempty"`
+	StartedAt                  string                    `json:"startedAt,omitempty"`
+	ModelCalls                 int                       `json:"modelCalls"`
+	Calls                      []ChainCallSummary        `json:"calls,omitempty"`
+	TotalContextSent           model.Measurement         `json:"totalContext"`
+	InitialContext             model.Measurement         `json:"initialContext"`
+	PeakContext                model.Measurement         `json:"peakContext"`
+	FinalContext               model.Measurement         `json:"finalContext"`
+	ContextGrowth              model.Measurement         `json:"contextGrowth"`
+	LargestGrowth              model.Measurement         `json:"largestGrowth"`
+	LargestGrowthCall          int                       `json:"largestGrowthCall,omitempty"`
+	ToolResultsGrowth          model.Measurement         `json:"toolResultsGrowth"`
+	HistoryGrowth              model.Measurement         `json:"historyGrowth"`
+	ToolsGrowth                model.Measurement         `json:"toolsGrowth"`
+	ProviderTotalInput         *model.Measurement        `json:"providerTotalInput,omitempty"`
+	ProviderCachedInput        *model.Measurement        `json:"providerCachedInput,omitempty"`
+	ProviderFreshInput         *model.Measurement        `json:"providerFreshInput,omitempty"`
+	ProviderCacheCreationInput *model.Measurement        `json:"providerCacheCreationInput,omitempty"`
+	ProviderOutput             *model.Measurement        `json:"providerOutput,omitempty"`
+	ProviderReasoning          *model.Measurement        `json:"providerReasoning,omitempty"`
+	UsageObservedCalls         *int                      `json:"usageObservedCalls,omitempty"`
+	UsageTotalCalls            *int                      `json:"usageTotalCalls,omitempty"`
+	AttributionGap             *model.Measurement        `json:"attributionGap,omitempty"`
+	AttributionCoverage        *AttributionCoverageValue `json:"attributionCoverage,omitempty"`
 }
 
 type AttributionCoverageValue struct {
@@ -122,12 +123,14 @@ type AttributionCoverageValue struct {
 }
 
 type CallProviderUsage struct {
-	Input           *int64 `json:"input,omitempty"`
-	CachedInput     *int64 `json:"cachedInput,omitempty"`
-	FreshInput      *int64 `json:"freshInput,omitempty"`
-	Output          *int64 `json:"output,omitempty"`
-	ReasoningOutput *int64 `json:"reasoningOutput,omitempty"`
-	Kind            string `json:"kind,omitempty"`
+	FreshInput         *int64 `json:"freshInput,omitempty"`
+	CachedInput        *int64 `json:"cachedInput,omitempty"`
+	CacheCreationInput *int64 `json:"cacheCreationInput,omitempty"`
+	TotalInput         *int64 `json:"totalInput,omitempty"`
+	Output             *int64 `json:"output,omitempty"`
+	ReasoningOutput    *int64 `json:"reasoningOutput,omitempty"`
+	Total              *int64 `json:"total,omitempty"`
+	Kind               string `json:"kind,omitempty"`
 }
 
 var (
@@ -193,6 +196,7 @@ func summarizeChain(chain Chain, exchanges map[string]Exchange) ChainSummary {
 		Profile:  chain.Profile,
 		Protocol: chain.Protocol,
 	}
+	var callKinds []providerFieldKinds
 	for i, entry := range chain.Exchanges {
 		exchange, ok := exchanges[entry.ID]
 		if !ok {
@@ -214,6 +218,7 @@ func summarizeChain(chain Chain, exchanges map[string]Exchange) ChainSummary {
 			call.ContextDelta = model.Measurement{Kind: model.MeasurementUnknown}
 		}
 		call.ProviderUsage, call.AttributionGap, call.AttributionCoverage = summarizeCallProviderUsage(exchange, request)
+		callKinds = append(callKinds, providerFieldKindsFor(exchange.Response.ProviderUsage))
 		summary.Calls = append(summary.Calls, call)
 	}
 	summary.ModelCalls = len(summary.Calls)
@@ -231,13 +236,13 @@ func summarizeChain(chain Chain, exchanges map[string]Exchange) ChainSummary {
 	summary.ToolResultsGrowth = subtractMetric(summary.Calls[len(summary.Calls)-1].Categories.ToolResult, summary.Calls[0].Categories.ToolResult)
 	summary.HistoryGrowth = subtractMetric(summary.Calls[len(summary.Calls)-1].Categories.History, summary.Calls[0].Categories.History)
 	summary.ToolsGrowth = subtractMetric(summary.Calls[len(summary.Calls)-1].Categories.ToolDefinition, summary.Calls[0].Categories.ToolDefinition)
-	summary.ProviderInput, summary.ProviderCachedInput, summary.ProviderFreshInput,
-		summary.ProviderOutput, summary.ProviderReasoning, summary.UsageObservedCalls,
-		summary.UsageTotalCalls = summarizeChainProviderUsage(summary.Calls)
-	if summary.ProviderInput != nil && summary.TotalContextSent.Available() {
-		gap := subtractMetric(*summary.ProviderInput, summary.TotalContextSent)
+	summary.ProviderTotalInput, summary.ProviderCachedInput, summary.ProviderFreshInput,
+		summary.ProviderCacheCreationInput, summary.ProviderOutput, summary.ProviderReasoning,
+		summary.UsageObservedCalls, summary.UsageTotalCalls = summarizeChainProviderUsage(summary.Calls, callKinds)
+	if summary.ProviderTotalInput != nil && summary.TotalContextSent.Available() {
+		gap := subtractMetric(*summary.ProviderTotalInput, summary.TotalContextSent)
 		summary.AttributionGap = &gap
-		summary.AttributionCoverage = computeCoverage(summary.TotalContextSent, *summary.ProviderInput, summary.TotalContextSent.Kind)
+		summary.AttributionCoverage = computeCoverage(summary.TotalContextSent, *summary.ProviderTotalInput, summary.TotalContextSent.Kind)
 	}
 	return summary
 }
@@ -247,33 +252,64 @@ func summarizeCallProviderUsage(exchange Exchange, request RequestSummary) (*Cal
 	if pu == nil {
 		return nil, nil, nil
 	}
-	out := &CallProviderUsage{Kind: "measured"}
-	if pu.InputTokens != nil {
-		v := *pu.InputTokens
-		out.Input = &v
-	}
-	if pu.CacheReadInputTokens != nil {
-		v := *pu.CacheReadInputTokens
-		out.CachedInput = &v
+	observed := ProviderUsageToObserved(pu)
+	out := &CallProviderUsage{Kind: providerSummaryKind(pu)}
+	switch pu.Source {
+	case string(ProtocolAnthropicMessages):
+		if pu.InputTokens != nil {
+			v := observed.RawInput
+			out.FreshInput = &v
+		}
+		if pu.CacheReadInputTokens != nil {
+			v := observed.Cached
+			out.CachedInput = &v
+		}
+		if pu.CacheCreationInputTokens != nil {
+			v := observed.CacheCreation
+			out.CacheCreationInput = &v
+		}
+		if pu.InputTokens != nil || pu.TotalInputTokens != nil {
+			v := observed.TotalInput
+			out.TotalInput = &v
+		}
+	case string(ProtocolOpenAIResponses):
+		if pu.InputTokens != nil {
+			v := observed.TotalInput
+			out.TotalInput = &v
+		}
+		if pu.CacheReadInputTokens != nil {
+			v := observed.Cached
+			out.CachedInput = &v
+			if pu.InputTokens != nil {
+				fresh := observed.RawInput
+				out.FreshInput = &fresh
+			}
+		}
+	default:
+		if pu.TotalInputTokens != nil {
+			v := observed.TotalInput
+			out.TotalInput = &v
+		}
 	}
 	if pu.OutputTokens != nil {
-		v := *pu.OutputTokens
+		v := observed.Output
 		out.Output = &v
 	}
 	if pu.ReasoningOutputTokens != nil {
-		v := *pu.ReasoningOutputTokens
+		v := observed.Reasoning
 		out.ReasoningOutput = &v
 	}
-	if out.Input != nil && out.CachedInput != nil {
-		fresh := *out.Input - *out.CachedInput
-		out.FreshInput = &fresh
+	if pu.OutputTokens != nil || pu.TotalTokens != nil {
+		v := observed.Total
+		out.Total = &v
 	}
-	if out.Input == nil && out.CachedInput == nil && out.Output == nil && out.ReasoningOutput == nil {
+	if out.FreshInput == nil && out.CachedInput == nil && out.CacheCreationInput == nil &&
+		out.TotalInput == nil && out.Output == nil && out.ReasoningOutput == nil && out.Total == nil {
 		return nil, nil, nil
 	}
 	var providerInput model.Measurement
-	if out.Input != nil {
-		providerInput = model.NewMeasurement(*out.Input, model.MeasurementMeasured)
+	if out.TotalInput != nil {
+		providerInput = model.NewMeasurement(*out.TotalInput, providerFieldKindsFor(pu).TotalInput)
 	}
 	attributed := request.Attributed.Value
 	var gap *model.Measurement
@@ -288,51 +324,65 @@ func summarizeCallProviderUsage(exchange Exchange, request RequestSummary) (*Cal
 	return out, gap, coverage
 }
 
-func summarizeChainProviderUsage(calls []ChainCallSummary) (*model.Measurement, *model.Measurement, *model.Measurement, *model.Measurement, *model.Measurement, *int, *int) {
+func summarizeChainProviderUsage(calls []ChainCallSummary, kinds []providerFieldKinds) (
+	*model.Measurement, *model.Measurement, *model.Measurement, *model.Measurement,
+	*model.Measurement, *model.Measurement, *int, *int,
+) {
 	if len(calls) == 0 {
-		return nil, nil, nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil, nil, nil
 	}
 	total := len(calls)
 	observed := 0
-	var inputSum, cachedSum, freshSum, outputSum, reasoningSum model.Measurement
-	inputAll := true
+	var totalInputSum, cachedSum, freshSum, cacheCreationSum, outputSum, reasoningSum model.Measurement
+	totalInputAll := true
 	cachedAll := true
 	freshAll := true
+	cacheCreationAll := true
 	outputAll := true
 	reasoningAll := true
-	for _, call := range calls {
+	for i, call := range calls {
 		pu := call.ProviderUsage
 		if pu == nil {
-			inputAll = false
+			totalInputAll = false
 			cachedAll = false
 			freshAll = false
+			cacheCreationAll = false
 			outputAll = false
 			reasoningAll = false
 			continue
 		}
 		observed++
-		if pu.Input != nil {
-			inputSum = addMeasurement(inputSum, model.NewMeasurement(*pu.Input, model.MeasurementMeasured))
+		k := providerFieldKinds{}
+		if i < len(kinds) {
+			k = kinds[i]
+		}
+		if pu.TotalInput != nil {
+			totalInputSum = addMeasurement(totalInputSum, model.NewMeasurement(*pu.TotalInput, k.TotalInput))
 		} else {
-			inputAll = false
+			totalInputAll = false
 		}
 		if pu.CachedInput != nil {
-			cachedSum = addMeasurement(cachedSum, model.NewMeasurement(*pu.CachedInput, model.MeasurementMeasured))
+			cachedSum = addMeasurement(cachedSum, model.NewMeasurement(*pu.CachedInput, k.Cached))
 		} else {
 			cachedAll = false
 		}
 		if pu.FreshInput != nil {
-			freshSum = addMeasurement(freshSum, model.NewMeasurement(*pu.FreshInput, model.MeasurementDerived))
+			freshSum = addMeasurement(freshSum, model.NewMeasurement(*pu.FreshInput, k.Fresh))
 		} else {
 			freshAll = false
 		}
+		if pu.CacheCreationInput != nil {
+			cacheCreationSum = addMeasurement(cacheCreationSum, model.NewMeasurement(*pu.CacheCreationInput, k.CacheCreation))
+		} else {
+			cacheCreationAll = false
+		}
 		if pu.Output != nil {
-			outputSum = addMeasurement(outputSum, model.NewMeasurement(*pu.Output, model.MeasurementMeasured))
+			outputSum = addMeasurement(outputSum, model.NewMeasurement(*pu.Output, k.Output))
 		} else {
 			outputAll = false
 		}
 		if pu.ReasoningOutput != nil {
-			reasoningSum = addMeasurement(reasoningSum, model.NewMeasurement(*pu.ReasoningOutput, model.MeasurementMeasured))
+			reasoningSum = addMeasurement(reasoningSum, model.NewMeasurement(*pu.ReasoningOutput, k.Reasoning))
 		} else {
 			reasoningAll = false
 		}
@@ -341,8 +391,8 @@ func summarizeChainProviderUsage(calls []ChainCallSummary) (*model.Measurement, 
 		if !ok || !m.Available() {
 			return nil
 		}
-		out := m
-		return &out
+		v := m
+		return &v
 	}
 	observedPtr := func(v int, ok bool) *int {
 		if !ok {
@@ -351,15 +401,17 @@ func summarizeChainProviderUsage(calls []ChainCallSummary) (*model.Measurement, 
 		out := v
 		return &out
 	}
-	input := ptr(inputSum, inputAll)
+	totalInput := ptr(totalInputSum, totalInputAll)
 	cached := ptr(cachedSum, cachedAll)
 	fresh := ptr(freshSum, freshAll)
+	cacheCreation := ptr(cacheCreationSum, cacheCreationAll)
 	output := ptr(outputSum, outputAll)
 	reasoning := ptr(reasoningSum, reasoningAll)
 	if observed == 0 {
-		return nil, nil, nil, nil, nil, observedPtr(0, true), observedPtr(total, true)
+		return nil, nil, nil, nil, nil, nil, observedPtr(0, true), observedPtr(total, true)
 	}
-	return input, cached, fresh, output, reasoning, observedPtr(observed, true), observedPtr(total, true)
+	return totalInput, cached, fresh, cacheCreation, output, reasoning,
+		observedPtr(observed, true), observedPtr(total, true)
 }
 
 func computeCoverage(attributed, provider model.Measurement, attributionKind model.MeasurementKind) *AttributionCoverageValue {

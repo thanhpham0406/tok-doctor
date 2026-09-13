@@ -34,6 +34,18 @@ func (e *RecorderError) Error() string {
 
 func (e *RecorderError) Unwrap() error { return e.Err }
 
+const RecorderFailureSchemaVersion = 1
+
+type RecorderFailure struct {
+	SchemaVersion int       `json:"schemaVersion,omitempty"`
+	Profile       string    `json:"profile"`
+	Operation     string    `json:"operation"`
+	ExchangeID    string    `json:"exchangeId,omitempty"`
+	OccurredAt    time.Time `json:"occurredAt"`
+}
+
+const recorderFailureJournalReadLimit = 1024
+
 type Summary struct {
 	Profile     string
 	Requests    int64
@@ -50,11 +62,12 @@ type noopSink struct{}
 func (noopSink) RecordRecorderFailure(string, *RecorderError) {}
 
 type FileRecorder struct {
-	dir   string
-	now   func() time.Time
-	mu    sync.Mutex
-	files map[string]*os.File
-	sink  RecorderSink
+	dir            string
+	now            func() time.Time
+	mu             sync.Mutex
+	files          map[string]*os.File
+	failureHandles map[string]*os.File
+	journalErrs    map[string]error
 }
 
 func NewFileRecorder(dir string) (*FileRecorder, error) {
@@ -62,43 +75,140 @@ func NewFileRecorder(dir string) (*FileRecorder, error) {
 		return nil, fmt.Errorf("create gateway dir %s: %w", dir, err)
 	}
 	return &FileRecorder{
-		dir:   dir,
-		now:   time.Now,
-		files: map[string]*os.File{},
-		sink:  noopSink{},
+		dir:            dir,
+		now:            time.Now,
+		files:          map[string]*os.File{},
+		failureHandles: map[string]*os.File{},
+		journalErrs:    map[string]error{},
 	}, nil
 }
 
-func (r *FileRecorder) SetSink(sink RecorderSink) {
-	if sink == nil {
-		sink = noopSink{}
+func (r *FileRecorder) Record(e Exchange) error {
+	failure := r.recordExchange(e)
+	if failure != nil {
+		return failure
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sink = sink
+	return nil
 }
 
-func (r *FileRecorder) Record(e Exchange) error {
+func (r *FileRecorder) recordExchange(e Exchange) *RecorderError {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	f, err := r.fileFor(e.Profile)
 	if err != nil {
-		r.notifyFailure(e.Profile, "open", err)
+		r.appendFailureLocked(e.Profile, "open", e.ID, err)
 		return &RecorderError{Profile: e.Profile, Op: "open", Err: err}
 	}
-	enc := json.NewEncoder(f)
-	if err := enc.Encode(e); err != nil {
-		r.notifyFailure(e.Profile, "encode", err)
+	if err := json.NewEncoder(f).Encode(e); err != nil {
+		r.appendFailureLocked(e.Profile, "encode", e.ID, err)
 		return &RecorderError{Profile: e.Profile, Op: "encode", Err: err}
 	}
 	return nil
 }
 
-func (r *FileRecorder) notifyFailure(profile, op string, err error) {
-	if r.sink == nil {
-		return
+// appendFailureLocked persists capture-failure metadata exactly once per
+// failed capture. Journal write problems never recurse back into this method;
+// they are stored per profile so readers can report an unhealthy journal
+// instead of silently treating accounting as complete.
+func (r *FileRecorder) appendFailureLocked(profile, op, exchangeID string, cause error) {
+	f, err := r.failureJournalHandleLocked(profile)
+	if err == nil {
+		entry := RecorderFailure{
+			SchemaVersion: RecorderFailureSchemaVersion,
+			Profile:       profile,
+			Operation:     op,
+			ExchangeID:    exchangeID,
+			OccurredAt:    r.now(),
+		}
+		err = json.NewEncoder(f).Encode(entry)
 	}
-	r.sink.RecordRecorderFailure(profile, &RecorderError{Profile: profile, Op: op, Err: err})
+	if err != nil {
+		if r.journalErrs[profile] == nil {
+			// The first journal problem wins; the capture error is kept as
+			// context so the caller can tell the accounting apart from the
+			// journal breakage later on.
+			r.journalErrs[profile] = fmt.Errorf("failure=%v journal=%w", cause, err)
+		}
+	}
+}
+
+type RecorderFailureRead struct {
+	Failures  []RecorderFailure
+	Total     int
+	Truncated bool
+}
+
+func (r *FileRecorder) RecorderFailures(profile string) (RecorderFailureRead, error) {
+	if r == nil {
+		return RecorderFailureRead{}, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err, ok := r.journalErrs[profile]; ok {
+		return RecorderFailureRead{}, fmt.Errorf("failure journal for %s: %w", profile, err)
+	}
+	return r.readFailureJournalLocked(profile)
+}
+
+func (r *FileRecorder) readFailureJournalLocked(profile string) (RecorderFailureRead, error) {
+	path := r.failureJournalPath(profile)
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return RecorderFailureRead{}, nil
+		}
+		return RecorderFailureRead{}, fmt.Errorf("open failure journal for %s: %w", profile, err)
+	}
+	defer func() { _ = file.Close() }()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	window := make([]RecorderFailure, 0, recorderFailureJournalReadLimit)
+	total := 0
+	for scanner.Scan() {
+		var entry RecorderFailure
+		if json.Unmarshal(scanner.Bytes(), &entry) != nil {
+			continue
+		}
+		if entry.Profile != "" && entry.Profile != profile {
+			continue
+		}
+		if total < recorderFailureJournalReadLimit {
+			window = append(window, entry)
+		} else {
+			window[total%recorderFailureJournalReadLimit] = entry
+		}
+		total++
+	}
+	if err := scanner.Err(); err != nil {
+		return RecorderFailureRead{}, fmt.Errorf("read failure journal for %s: %w", profile, err)
+	}
+	read := RecorderFailureRead{Failures: window, Total: total, Truncated: total > recorderFailureJournalReadLimit}
+	if !read.Truncated {
+		return read, nil
+	}
+	start := (total - recorderFailureJournalReadLimit) % recorderFailureJournalReadLimit
+	out := make([]RecorderFailure, 0, recorderFailureJournalReadLimit)
+	out = append(out, window[start:]...)
+	out = append(out, window[:start]...)
+	read.Failures = out
+	return read, nil
+}
+
+func (r *FileRecorder) failureJournalPath(profile string) string {
+	return filepath.Join(r.dir, profile+".failures.jsonl")
+}
+
+func (r *FileRecorder) failureJournalHandleLocked(profile string) (*os.File, error) {
+	if f, ok := r.failureHandles[profile]; ok {
+		return f, nil
+	}
+	path := r.failureJournalPath(profile)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	r.failureHandles[profile] = f
+	return f, nil
 }
 
 func (r *FileRecorder) Summary(profile string) (Summary, error) {
@@ -140,7 +250,13 @@ func (r *FileRecorder) Close() error {
 			firstErr = err
 		}
 	}
+	for _, f := range r.failureHandles {
+		if err := f.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	r.files = map[string]*os.File{}
+	r.failureHandles = map[string]*os.File{}
 	return firstErr
 }
 
@@ -167,12 +283,38 @@ func (r *FileRecorder) Purge(profile string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	path := r.pathFor(profile)
+	var closeErr error
+	if f, ok := r.files[profile]; ok {
+		if err := f.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+		delete(r.files, profile)
+	}
+	if f, ok := r.failureHandles[profile]; ok {
+		if err := f.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+		delete(r.failureHandles, profile)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("purge %s: close handles: %w", profile, closeErr)
+	}
+	if err := r.removeFile(r.pathFor(profile)); err != nil {
+		return fmt.Errorf("purge capture %s: %w", profile, err)
+	}
+	if err := r.removeFile(r.failureJournalPath(profile)); err != nil {
+		return fmt.Errorf("purge failure journal %s: %w", profile, err)
+	}
+	delete(r.journalErrs, profile)
+	return nil
+}
+
+func (r *FileRecorder) removeFile(path string) error {
 	err := os.Remove(path)
 	if err == nil || os.IsNotExist(err) {
 		return nil
 	}
-	return fmt.Errorf("purge capture %s: %w", profile, err)
+	return err
 }
 
 func ValidateCaptureProfile(profile string) error {
@@ -209,8 +351,8 @@ func Replay(r *FileRecorder, profile string) ([]Exchange, error) {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
-	dec := json.NewDecoder(file)
 	var out []Exchange
+	dec := json.NewDecoder(file)
 	for {
 		var e Exchange
 		if err := dec.Decode(&e); err != nil {
@@ -269,8 +411,8 @@ func (r *FileRecorder) FindExchange(profile, id string) (Exchange, error) {
 	case 1:
 		return matches[0], nil
 	case 0:
-		return Exchange{}, fmt.Errorf("exchange %q in profile %q: %w", id, profile, ErrExchangeNotFound)
+		return Exchange{}, fmt.Errorf("exchange %q in profile %s: %w", id, profile, ErrExchangeNotFound)
 	default:
-		return Exchange{}, fmt.Errorf("exchange %q in profile %q: %w", id, profile, ErrExchangeAmbiguous)
+		return Exchange{}, fmt.Errorf("exchange %q in profile %s: %w", id, profile, ErrExchangeAmbiguous)
 	}
 }

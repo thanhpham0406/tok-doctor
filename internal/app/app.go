@@ -586,7 +586,11 @@ func (a *App) GatewayReport(profileName string) (gateway.ProfileAccount, error) 
 		return gateway.ProfileAccount{}, err
 	}
 	chainResult := gateway.NewChainBuilder().Build(exchanges)
-	return gateway.AccountProfile(profileName, exchanges, chainResult, nil), nil
+	failures, err := recorder.RecorderFailures(profileName)
+	if err != nil {
+		return gateway.ProfileAccount{}, fmt.Errorf("gateway report %s: %w", profileName, err)
+	}
+	return gateway.AccountProfile(profileName, exchanges, chainResult, failures), nil
 }
 
 func (a *App) openRecorder() (*gateway.FileRecorder, error) {

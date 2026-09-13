@@ -10,6 +10,8 @@ type ProfileAccountCounts struct {
 	ChainedRequests       int `json:"chainedRequests"`
 	UncorrelatedReqs      int `json:"uncorrelatedRequests"`
 	NonModelRequests      int `json:"nonModelRequests"`
+	UnknownRequests       int `json:"unknownRequests"`
+	UnclassifiedRequests  int `json:"unclassifiedRequests"`
 	RecorderFailures      int `json:"recorderFailures"`
 	UsageObservedRequests int `json:"usageObservedRequests"`
 }
@@ -46,61 +48,102 @@ func (a *ProfileUsageAggregate) record(usage *ProviderUsage) {
 	if usage == nil {
 		return
 	}
+	if !usage.HasUsage() {
+		return
+	}
 	a.Observed++
-	if usage.InputTokens != nil {
-		v := *usage.InputTokens
-		mergeField(&a.RawInput, v)
-	}
-	if usage.CacheReadInputTokens != nil {
-		v := *usage.CacheReadInputTokens
-		mergeField(&a.Cached, v)
-	}
-	if usage.CacheCreationInputTokens != nil {
-		v := *usage.CacheCreationInputTokens
-		mergeField(&a.CacheCreation, v)
+	observed := ProviderUsageToObserved(usage)
+	k := providerFieldKindsFor(usage)
+	switch usage.Source {
+	case string(ProtocolAnthropicMessages):
+		if usage.InputTokens != nil {
+			mergeField(&a.RawInput, observed.RawInput, k.Fresh)
+		}
+		if usage.CacheReadInputTokens != nil {
+			mergeField(&a.Cached, observed.Cached, k.Cached)
+		}
+		if usage.CacheCreationInputTokens != nil {
+			mergeField(&a.CacheCreation, observed.CacheCreation, k.CacheCreation)
+		}
+		if usage.InputTokens != nil || usage.TotalInputTokens != nil {
+			mergeField(&a.TotalInput, observed.TotalInput, k.TotalInput)
+		}
+	case string(ProtocolOpenAIResponses):
+		if usage.InputTokens != nil || usage.TotalInputTokens != nil {
+			mergeField(&a.TotalInput, observed.TotalInput, k.TotalInput)
+			if usage.CacheReadInputTokens != nil {
+				mergeField(&a.Cached, observed.Cached, k.Cached)
+				mergeField(&a.RawInput, observed.RawInput, k.Fresh)
+			}
+		}
+	default:
+		if usage.TotalInputTokens != nil {
+			mergeField(&a.TotalInput, observed.TotalInput, k.TotalInput)
+		}
 	}
 	if usage.OutputTokens != nil {
-		v := *usage.OutputTokens
-		mergeField(&a.Output, v)
+		mergeField(&a.Output, observed.Output, k.Output)
 	}
 	if usage.ReasoningOutputTokens != nil {
-		v := *usage.ReasoningOutputTokens
-		mergeField(&a.Reasoning, v)
+		mergeField(&a.Reasoning, observed.Reasoning, k.Reasoning)
 	}
-	observed := ProviderUsageToObserved(usage)
-	mergeField(&a.TotalInput, observed.TotalInput)
-	mergeField(&a.Total, observed.Total)
+	a.recordTotal(usage, observed, k)
 }
 
-func mergeField(field *FieldAggregate, value int64) {
+func (a *ProfileUsageAggregate) recordTotal(usage *ProviderUsage, observed ObservedUsage, k providerFieldKinds) {
+	if usage.TotalTokens != nil {
+		mergeField(&a.Total, *usage.TotalTokens, k.Total)
+		return
+	}
+	total, ok := derivedTotal(usage, observed)
+	if !ok {
+		return
+	}
+	mergeField(&a.Total, total, k.Total)
+}
+
+func derivedTotal(usage *ProviderUsage, observed ObservedUsage) (int64, bool) {
+	if !isKnownProviderSource(usage.Source) {
+		return 0, false
+	}
+	hasInput := usage.InputTokens != nil || usage.TotalInputTokens != nil
+	if !hasInput || usage.OutputTokens == nil {
+		return 0, false
+	}
+	return observed.Total, true
+}
+
+func mergeField(field *FieldAggregate, value int64, kind model.MeasurementKind) {
 	field.Count++
 	field.Sum += value
-	if field.Kind == "" {
-		field.Kind = model.MeasurementMeasured
-	}
+	field.Kind = weakenKind(field.Kind, kind)
 }
 
 type ProfileAccount struct {
-	Profile        string                `json:"profile"`
-	Counts         ProfileAccountCounts  `json:"counts"`
-	Outcomes       OutcomeCounts         `json:"outcomes"`
-	Observed       ProfileUsageAggregate `json:"observed"`
-	Chained        ProfileUsageAggregate `json:"chained"`
-	Uncorrelated   ProfileUsageAggregate `json:"uncorrelated"`
-	Completeness   string                `json:"completeness"`
-	RecorderErrors []*RecorderError      `json:"recorderErrors,omitempty"`
+	SchemaVersion             int                   `json:"schemaVersion,omitempty"`
+	Profile                   string                `json:"profile"`
+	Counts                    ProfileAccountCounts  `json:"counts"`
+	Outcomes                  OutcomeCounts         `json:"outcomes"`
+	Observed                  ProfileUsageAggregate `json:"observed"`
+	Chained                   ProfileUsageAggregate `json:"chained"`
+	Uncorrelated              ProfileUsageAggregate `json:"uncorrelated"`
+	Completeness              string                `json:"completeness"`
+	RecorderFailures          []RecorderFailure     `json:"recorderFailures,omitempty"`
+	RecorderFailuresTruncated bool                  `json:"recorderFailuresTruncated,omitempty"`
 }
 
-func AccountProfile(profile string, exchanges []Exchange, chainResult ChainBuildResult, recorderErrors []*RecorderError) ProfileAccount {
+func AccountProfile(profile string, exchanges []Exchange, chainResult ChainBuildResult, failures RecorderFailureRead) ProfileAccount {
 	account := ProfileAccount{
-		Profile:      profile,
-		Completeness: "complete",
-		Observed:     ProfileUsageAggregate{Complete: true},
-		Chained:      ProfileUsageAggregate{Complete: true},
-		Uncorrelated: ProfileUsageAggregate{Complete: true},
+		SchemaVersion: 1,
+		Profile:       profile,
+		Completeness:  "complete",
+		Observed:      ProfileUsageAggregate{Complete: true},
+		Chained:       ProfileUsageAggregate{Complete: true},
+		Uncorrelated:  ProfileUsageAggregate{Complete: true},
 	}
-	account.RecorderErrors = recorderErrors
-	account.Counts.RecorderFailures = len(recorderErrors)
+	account.RecorderFailures = failures.Failures
+	account.RecorderFailuresTruncated = failures.Truncated
+	account.Counts.RecorderFailures = failures.Total
 
 	chainSet := map[string]bool{}
 	for _, chain := range chainResult.Chains {
@@ -122,6 +165,10 @@ func AccountProfile(profile string, exchanges []Exchange, chainResult ChainBuild
 			}
 		case RequestKindNonModel:
 			account.Counts.NonModelRequests++
+		case RequestKindUnknown:
+			account.Counts.UnknownRequests++
+		case RequestKindUnclassified:
+			account.Counts.UnclassifiedRequests++
 		}
 
 		if !isChainModelCall(ex) {
@@ -134,6 +181,11 @@ func AccountProfile(profile string, exchanges []Exchange, chainResult ChainBuild
 		if pu == nil {
 			continue
 		}
+		if !isKnownProviderSource(pu.Source) {
+			// A model request with an unrecognised usage schema must not
+			// silently flip the profile to "complete".
+			account.Observed.Complete = false
+		}
 		if chainSet[ex.ID] {
 			account.Chained.record(pu)
 			account.Observed.record(pu)
@@ -143,6 +195,9 @@ func AccountProfile(profile string, exchanges []Exchange, chainResult ChainBuild
 		}
 		account.Counts.UsageObservedRequests++
 	}
+	// Completeness is computed against model traffic only; unknown and
+	// unclassified requests are reported but do not affect the observed
+	// versus complete ratio.
 	finalizeAggregate(&account.Observed, account.Counts.ModelRequests)
 	finalizeAggregate(&account.Chained, account.Counts.ChainedRequests)
 	finalizeAggregate(&account.Uncorrelated, account.Counts.UncorrelatedReqs)
@@ -197,4 +252,8 @@ func bucketOutcome(c *OutcomeCounts, outcome RequestOutcome) {
 	default:
 		c.OutcomeUnknown++
 	}
+}
+
+func isKnownProviderSource(source string) bool {
+	return source == string(ProtocolAnthropicMessages) || source == string(ProtocolOpenAIResponses)
 }

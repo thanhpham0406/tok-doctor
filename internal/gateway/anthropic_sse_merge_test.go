@@ -2,37 +2,42 @@ package gateway
 
 import "testing"
 
-// TestAnthropic_MergeAcrossPartialDeltas_AllFieldsKept verifies that when
-// different message_delta events carry disjoint fields, each field survives
-// to the merged snapshot. Anthropic reports cumulative usage across events;
-// summing them must not happen, and replacing a previously seen field with
-// explicit zero must happen.
 func TestAnthropic_MergeAcrossPartialDeltas_AllFieldsKept(t *testing.T) {
 	state := newAnthropicStreamState()
+	obs := AnthropicMessagesObserver{}
 
-	parse := func(payload []byte) (*ProviderUsage, bool) {
-		return (AnthropicMessagesObserver{}).ParseStreamFrame(state, payload)
+	parse := func(payload []byte) StreamFrameObservation {
+		return obs.ParseStreamFrame(state, payload)
 	}
 
-	if usage, terminal := parse([]byte(`{"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":0}}}`)); usage == nil || terminal {
-		t.Fatalf("message_start unexpected: %+v %v", usage, terminal)
+	got := parse([]byte(`{"type":"message_start","message":{"id":"msg_x","usage":{"input_tokens":100,"output_tokens":0}}}`))
+	if got.Terminal {
+		t.Fatalf("message_start should not be terminal")
 	}
-	if _, terminal := parse([]byte(`{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}`)); terminal {
+	if got.ResponseObjectID != "msg_x" {
+		t.Fatalf("message_start must capture message.id, got %q", got.ResponseObjectID)
+	}
+	got = parse([]byte(`{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}`))
+	if got.Terminal {
 		t.Fatalf("content_block_delta should not be terminal")
 	}
-	if usage, _ := parse([]byte(`{"type":"message_delta","usage":{"cache_creation_input_tokens":20}}`)); usage == nil {
+	got = parse([]byte(`{"type":"message_delta","usage":{"cache_creation_input_tokens":20}}`))
+	if got.Usage == nil {
 		t.Fatalf("delta cache_creation must keep prior fields")
 	}
-	if usage, _ := parse([]byte(`{"type":"message_delta","usage":{"output_tokens":30}}`)); usage == nil {
+	got = parse([]byte(`{"type":"message_delta","usage":{"output_tokens":30}}`))
+	if got.Usage == nil {
 		t.Fatalf("delta output must keep prior fields")
 	}
-	if _, terminal := parse([]byte(`{"type":"message_stop"}`)); !terminal {
+	got = parse([]byte(`{"type":"message_stop"}`))
+	if !got.Terminal {
 		t.Fatalf("message_stop should mark terminal")
 	}
-	pu, terminal := parse([]byte(`{"type":"message_stop"}`))
-	if !terminal {
+	got = parse([]byte(`{"type":"message_stop"}`))
+	if !got.Terminal {
 		t.Fatalf("second message_stop still terminal")
 	}
+	pu := got.Usage
 	if pu == nil {
 		t.Fatalf("final snapshot must exist")
 	}
@@ -45,20 +50,21 @@ func TestAnthropic_MergeAcrossPartialDeltas_AllFieldsKept(t *testing.T) {
 	if pu.OutputTokens == nil || *pu.OutputTokens != 30 {
 		t.Fatalf("output lost: %+v", pu.OutputTokens)
 	}
+	if got.ResponseObjectID != "msg_x" {
+		t.Fatalf("message.id lost: %q", got.ResponseObjectID)
+	}
 }
 
-// TestAnthropic_ExplicitZeroReplacesPriorSnapshot ensures a later event
-// carrying an explicit zero replaces the prior value. Anthropic sends
-// revised snapshots as the model runs; zero is the expected replacement,
-// not a no-op.
 func TestAnthropic_ExplicitZeroReplacesPriorSnapshot(t *testing.T) {
 	state := newAnthropicStreamState()
 	obs := AnthropicMessagesObserver{}
 
-	if _, _ = obs.ParseStreamFrame(state, []byte(`{"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":42}}}`)); state.snapshot.OutputTokens == nil {
+	obs.ParseStreamFrame(state, []byte(`{"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":42}}}`))
+	if state.snapshot.OutputTokens == nil {
 		t.Fatalf("start snapshot missing output")
 	}
-	if _, _ = obs.ParseStreamFrame(state, []byte(`{"type":"message_delta","usage":{"output_tokens":0}}`)); state.snapshot.OutputTokens == nil || *state.snapshot.OutputTokens != 0 {
+	obs.ParseStreamFrame(state, []byte(`{"type":"message_delta","usage":{"output_tokens":0}}`))
+	if state.snapshot.OutputTokens == nil || *state.snapshot.OutputTokens != 0 {
 		t.Fatalf("zero must replace prior output, got %+v", state.snapshot.OutputTokens)
 	}
 	if state.snapshot.InputTokens == nil || *state.snapshot.InputTokens != 100 {
@@ -66,24 +72,28 @@ func TestAnthropic_ExplicitZeroReplacesPriorSnapshot(t *testing.T) {
 	}
 }
 
-// TestAnthropic_MalformedFrameDoesNotCorruptSnapshot covers the case where
-// one `data:` payload carries invalid JSON between two valid snapshots.
-// The valid snapshots must keep merging normally.
 func TestAnthropic_MalformedFrameDoesNotCorruptSnapshot(t *testing.T) {
 	state := newAnthropicStreamState()
 	obs := AnthropicMessagesObserver{}
 
-	_, _ = obs.ParseStreamFrame(state, []byte(`{"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":2}}}`))
-	_, _ = obs.ParseStreamFrame(state, []byte(`{not valid json`))
+	obs.ParseStreamFrame(state, []byte(`{"type":"message_start","message":{"id":"msg_x","usage":{"input_tokens":1,"output_tokens":2}}}`))
+	obs.ParseStreamFrame(state, []byte(`{not valid json`))
 	if state.snapshot.InputTokens == nil || *state.snapshot.InputTokens != 1 {
 		t.Fatalf("malformed frame corrupted snapshot: %+v", state.snapshot)
 	}
-	pu, _ := obs.ParseStreamFrame(state, []byte(`{"type":"message_delta","usage":{"output_tokens":3}}`))
+	if state.messageID != "msg_x" {
+		t.Fatalf("malformed frame corrupted message id: %q", state.messageID)
+	}
+	got := obs.ParseStreamFrame(state, []byte(`{"type":"message_delta","usage":{"output_tokens":3}}`))
+	pu := got.Usage
 	if pu == nil || pu.OutputTokens == nil || *pu.OutputTokens != 3 {
 		t.Fatalf("valid frame after malformed: %+v", pu)
 	}
 	if pu.InputTokens == nil || *pu.InputTokens != 1 {
 		t.Fatalf("input must survive malformed frame: %+v", pu)
+	}
+	if got.ResponseObjectID != "msg_x" {
+		t.Fatalf("message.id must survive malformed frame: %q", got.ResponseObjectID)
 	}
 }
 
@@ -92,13 +102,11 @@ func TestAnthropic_MultipleConcurrentStreamsCarrySeparateState(t *testing.T) {
 	b := newAnthropicStreamState()
 	obs := AnthropicMessagesObserver{}
 
-	if _, _ = obs.ParseStreamFrame(a, []byte(`{"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":10}}}`)); true {
-	}
-	if _, _ = obs.ParseStreamFrame(b, []byte(`{"type":"message_start","message":{"usage":{"input_tokens":200,"output_tokens":20}}}`)); true {
-	}
+	obs.ParseStreamFrame(a, []byte(`{"type":"message_start","message":{"id":"msg_a","usage":{"input_tokens":100,"output_tokens":10}}}`))
+	obs.ParseStreamFrame(b, []byte(`{"type":"message_start","message":{"id":"msg_b","usage":{"input_tokens":200,"output_tokens":20}}}`))
 
-	ap, _ := obs.ParseStreamFrame(a, []byte(`{"type":"message_delta","usage":{"output_tokens":11}}`))
-	bp, _ := obs.ParseStreamFrame(b, []byte(`{"type":"message_delta","usage":{"output_tokens":22}}`))
+	ap := obs.ParseStreamFrame(a, []byte(`{"type":"message_delta","usage":{"output_tokens":11}}`)).Usage
+	bp := obs.ParseStreamFrame(b, []byte(`{"type":"message_delta","usage":{"output_tokens":22}}`)).Usage
 	if ap == nil || bp == nil {
 		t.Fatalf("usage missing")
 	}
@@ -108,12 +116,19 @@ func TestAnthropic_MultipleConcurrentStreamsCarrySeparateState(t *testing.T) {
 	if *bp.InputTokens != 200 || *bp.OutputTokens != 22 {
 		t.Fatalf("stream b usage wrong: %+v", bp)
 	}
+	if a.messageID != "msg_a" || b.messageID != "msg_b" {
+		t.Fatalf("message ids crossed between streams: a=%q b=%q", a.messageID, b.messageID)
+	}
 }
 
 func TestAnthropic_NoMessageStartNeverReturnsUsage(t *testing.T) {
 	state := newAnthropicStreamState()
 	obs := AnthropicMessagesObserver{}
-	if pu, _ := obs.ParseStreamFrame(state, []byte(`{"type":"content_block_start","index":0}`)); pu != nil {
-		t.Fatalf("usage must be nil before message_start, got %+v", pu)
+	got := obs.ParseStreamFrame(state, []byte(`{"type":"content_block_start","index":0}`))
+	if got.Usage != nil {
+		t.Fatalf("usage must be nil before message_start, got %+v", got.Usage)
+	}
+	if got.ResponseObjectID != "" {
+		t.Fatalf("no message_start means no message.id: got %q", got.ResponseObjectID)
 	}
 }

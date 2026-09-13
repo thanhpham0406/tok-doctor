@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -480,13 +482,14 @@ func TestAccountProfile_AnthropicTokensAreCanonicalized(t *testing.T) {
 			Endpoint: "/v1/messages",
 		},
 		Response: ExchangeResponse{ProviderUsage: &ProviderUsage{
+			Source:                   "anthropic_messages",
 			InputTokens:              &in,
 			CacheCreationInputTokens: &cc,
 			CacheReadInputTokens:     &cr,
 			OutputTokens:             &out,
 		}},
 	}
-	account := AccountProfile("p", []Exchange{exchange}, ChainBuildResult{}, nil)
+	account := AccountProfile("p", []Exchange{exchange}, ChainBuildResult{}, RecorderFailureRead{})
 	if account.Observed.TotalInput.Sum != 920 {
 		t.Fatalf("observed.TotalInput = %d, want 920", account.Observed.TotalInput.Sum)
 	}
@@ -504,16 +507,16 @@ func TestAccountProfile_PerFieldCompletenessForMissingFields(t *testing.T) {
 			ID: "gw-a", Profile: "p", Protocol: ProtocolAnthropicMessages, StartedAt: time.Unix(0, 0),
 			Kind: RequestKindModel, Outcome: OutcomeUpstreamOK,
 			Request:  ExchangeRequest{Method: http.MethodPost, Endpoint: "/v1/messages"},
-			Response: ExchangeResponse{ProviderUsage: &ProviderUsage{InputTokens: &inOne, OutputTokens: &outOne}},
+			Response: ExchangeResponse{ProviderUsage: &ProviderUsage{Source: string(ProtocolAnthropicMessages), InputTokens: &inOne, OutputTokens: &outOne}},
 		},
 		{
 			ID: "gw-b", Profile: "p", Protocol: ProtocolAnthropicMessages, StartedAt: time.Unix(1, 0),
 			Kind: RequestKindModel, Outcome: OutcomeUpstreamOK,
 			Request:  ExchangeRequest{Method: http.MethodPost, Endpoint: "/v1/messages"},
-			Response: ExchangeResponse{ProviderUsage: &ProviderUsage{InputTokens: &inTwo}},
+			Response: ExchangeResponse{ProviderUsage: &ProviderUsage{Source: string(ProtocolAnthropicMessages), InputTokens: &inTwo}},
 		},
 	}
-	account := AccountProfile("p", exchanges, ChainBuildResult{}, nil)
+	account := AccountProfile("p", exchanges, ChainBuildResult{}, RecorderFailureRead{})
 	if account.Observed.Complete {
 		t.Fatalf("expected aggregate.Observed.Complete=false when output missing on one request")
 	}
@@ -535,7 +538,7 @@ func TestAccountProfile_ChainedCompleteUncorrelatedMissingIsPartial(t *testing.T
 		ID: "gw-a", Profile: "p", Protocol: ProtocolAnthropicMessages, StartedAt: time.Unix(0, 0),
 		Kind: RequestKindModel, Outcome: OutcomeUpstreamOK,
 		Request:  ExchangeRequest{Method: http.MethodPost, Endpoint: "/v1/messages"},
-		Response: ExchangeResponse{ProviderUsage: &ProviderUsage{InputTokens: &in, OutputTokens: &out}},
+		Response: ExchangeResponse{ProviderUsage: &ProviderUsage{Source: string(ProtocolAnthropicMessages), InputTokens: &in, OutputTokens: &out}},
 	}
 	b := Exchange{
 		ID: "gw-b", Profile: "p", Protocol: ProtocolAnthropicMessages, StartedAt: time.Unix(1, 0),
@@ -548,7 +551,7 @@ func TestAccountProfile_ChainedCompleteUncorrelatedMissingIsPartial(t *testing.T
 		Exchanges: []ChainExchange{{ID: "gw-a", StartedAt: "1970-01-01T00:00:00Z"}},
 	}
 	build := ChainBuildResult{Chains: []Chain{chain}}
-	account := AccountProfile("p", []Exchange{a, b}, build, nil)
+	account := AccountProfile("p", []Exchange{a, b}, build, RecorderFailureRead{})
 	if !account.Chained.Complete {
 		t.Fatalf("Chained aggregate covers only a and should be complete: %+v", account.Chained)
 	}
@@ -568,11 +571,11 @@ func TestAccountProfile_TruncatedStreamMarksPartialEvenWithSnapshot(t *testing.T
 		Kind: RequestKindModel, Outcome: OutcomeStreamTruncated,
 		Request: ExchangeRequest{Method: http.MethodPost, Endpoint: "/v1/messages"},
 		Response: ExchangeResponse{
-			ProviderUsage: &ProviderUsage{InputTokens: &in, OutputTokens: &out},
+			ProviderUsage: &ProviderUsage{Source: string(ProtocolAnthropicMessages), InputTokens: &in, OutputTokens: &out},
 			Usage:         &ObservedUsage{Truncated: true},
 		},
 	}
-	account := AccountProfile("p", []Exchange{ex}, ChainBuildResult{}, nil)
+	account := AccountProfile("p", []Exchange{ex}, ChainBuildResult{}, RecorderFailureRead{})
 	if account.Completeness != "partial" {
 		t.Fatalf("Completeness = %q, want partial (truncated)", account.Completeness)
 	}
@@ -582,7 +585,7 @@ func TestAccountProfile_TruncatedStreamMarksPartialEvenWithSnapshot(t *testing.T
 }
 
 func TestAccountProfile_ExchangesNoModelRequestsIsComplete(t *testing.T) {
-	account := AccountProfile("p", nil, ChainBuildResult{}, nil)
+	account := AccountProfile("p", nil, ChainBuildResult{}, RecorderFailureRead{})
 	if !account.Observed.Complete {
 		t.Fatalf("expected complete when no model requests")
 	}
@@ -607,7 +610,7 @@ func TestAccountProfile_OutcomesAggregated(t *testing.T) {
 		make("gw-e", OutcomeStreamTruncated),
 		make("gw-f", OutcomeUnknown),
 	}
-	account := AccountProfile("p", exs, ChainBuildResult{}, nil)
+	account := AccountProfile("p", exs, ChainBuildResult{}, RecorderFailureRead{})
 	if account.Outcomes.OutcomeUpstreamOK != 1 || account.Outcomes.OutcomeUpstreamHTTPError != 1 ||
 		account.Outcomes.OutcomeTransportFailure != 1 || account.Outcomes.OutcomeClientCanceled != 1 ||
 		account.Outcomes.OutcomeStreamTruncated != 1 || account.Outcomes.OutcomeUnknown != 1 {
@@ -622,14 +625,14 @@ func TestRender_ReportJSONContainsBucketCountsOutcomesAndCompleteness(t *testing
 		ID: "gw-rend", Profile: "p", Protocol: ProtocolAnthropicMessages, StartedAt: time.Unix(0, 0),
 		Kind: RequestKindModel, Outcome: OutcomeUpstreamOK,
 		Request:  ExchangeRequest{Method: http.MethodPost, Endpoint: "/v1/messages"},
-		Response: ExchangeResponse{ProviderUsage: &ProviderUsage{InputTokens: &in, OutputTokens: &out}},
+		Response: ExchangeResponse{ProviderUsage: &ProviderUsage{Source: string(ProtocolAnthropicMessages), InputTokens: &in, OutputTokens: &out}},
 	}
 	nonModel := Exchange{
 		ID: "gw-rend2", Profile: "p", Protocol: ProtocolAnthropicMessages, StartedAt: time.Unix(1, 0),
 		Kind: RequestKindNonModel, Outcome: OutcomeUpstreamOK,
 		Request: ExchangeRequest{Method: http.MethodGet, Endpoint: "/v1/models"},
 	}
-	account := AccountProfile("p", []Exchange{ex, nonModel}, ChainBuildResult{}, nil)
+	account := AccountProfile("p", []Exchange{ex, nonModel}, ChainBuildResult{}, RecorderFailureRead{})
 	raw, err := json.Marshal(account)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -641,5 +644,131 @@ func TestRender_ReportJSONContainsBucketCountsOutcomesAndCompleteness(t *testing
 		}
 	}
 }
+
+func TestProxy_RecorderFailureKeepsClientResponseAndBuffersFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_1","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	// Force every Record to fail by pre-creating the capture JSONL as a
+	// directory. The failure journal path is unaffected, so each Record
+	// must append exactly one entry there.
+	if err := os.Mkdir(filepath.Join(dir, "p.jsonl"), 0o755); err != nil {
+		t.Fatalf("seed capture conflict: %v", err)
+	}
+	rec, _ := NewFileRecorder(dir)
+	defer func() { _ = rec.Close() }()
+
+	listen, _ := freeLoopback(t)
+	proxy, _ := NewProxy(
+		Profile{Name: "p", Enabled: true, Listen: listen, Protocol: "anthropic_messages", Source: "claude", Upstream: upstream.URL},
+		AnthropicMessagesObserver{}, rec,
+	)
+	srv := httptest.NewServer(proxy.Handler())
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/v1/messages", "application/json", strings.NewReader(`{"model":"x","messages":[]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	got, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(got, []byte(`"usage"`)) {
+		t.Fatalf("client must still receive upstream body, got %s", got)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	failures, err := rec.RecorderFailures("p")
+	if err != nil {
+		t.Fatalf("read failures: %v", err)
+	}
+	if len(failures.Failures) != 1 {
+		t.Fatalf("recorder failures len = %d, want 1 (no duplicate)", len(failures.Failures))
+	}
+	if failures.Failures[0].Operation != "open" {
+		t.Fatalf("operation = %q, want open", failures.Failures[0].Operation)
+	}
+	if failures.Failures[0].ExchangeID == "" {
+		t.Fatalf("exchange id must be set")
+	}
+}
+
+func TestProxy_StillReturns200OnRecorderFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	listen, _ := freeLoopback(t)
+	r := &failingRecorder{failOn: 1}
+	defer func() { _ = r.Close() }()
+	proxy, _ := NewProxy(
+		Profile{Name: "p", Enabled: true, Listen: listen, Protocol: "anthropic_messages", Source: "claude", Upstream: upstream.URL},
+		AnthropicMessagesObserver{}, r,
+	)
+	proxy.Sink = &sinkCollector{}
+	srv := httptest.NewServer(proxy.Handler())
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/v1/messages", "application/json", strings.NewReader(`{"model":"x","messages":[]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 even when recorder fails", resp.StatusCode)
+	}
+}
+
+func TestProxy_StreamRecorderFailureNotifiedExactlyOnce(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_f\",\"usage\":{\"input_tokens\":1}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer upstream.Close()
+
+	listen, _ := freeLoopback(t)
+	r := &failingRecorder{failOn: 1}
+	defer func() { _ = r.Close() }()
+	proxy, _ := NewProxy(
+		Profile{Name: "p", Enabled: true, Listen: listen, Protocol: "anthropic_messages", Source: "claude", Upstream: upstream.URL},
+		AnthropicMessagesObserver{}, r,
+	)
+	var hits int32
+	var mu sync.Mutex
+	proxy.Sink = sinkFunc(func(_ string, _ *RecorderError) {
+		mu.Lock()
+		defer mu.Unlock()
+		hits = 1
+	})
+	srv := httptest.NewServer(proxy.Handler())
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/v1/messages", "application/json", strings.NewReader(`{"model":"x","messages":[]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	mu.Lock()
+	got := hits
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("stream record failure sink hits = %d, want 1", got)
+	}
+}
+
+type sinkFunc func(string, *RecorderError)
+
+func (f sinkFunc) RecordRecorderFailure(profile string, err *RecorderError) { f(profile, err) }
 
 var _ = time.Unix

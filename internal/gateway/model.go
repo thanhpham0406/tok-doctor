@@ -13,6 +13,8 @@ const (
 	ProtocolOpenAIResponses   Protocol = "openai_responses"
 )
 
+const ExchangeSchemaVersion = 1
+
 func IsSupportedProtocol(name string) bool {
 	switch Protocol(name) {
 	case ProtocolAnthropicMessages, ProtocolOpenAIResponses:
@@ -42,13 +44,14 @@ const (
 )
 
 type Exchange struct {
-	ID         string    `json:"id"`
-	Profile    string    `json:"profile"`
-	SourceHint string    `json:"source,omitempty"`
-	Protocol   Protocol  `json:"protocol"`
-	StartedAt  time.Time `json:"startedAt"`
-	Upstream   string    `json:"upstream"`
-	Model      string    `json:"model,omitempty"`
+	SchemaVersion int       `json:"schemaVersion,omitempty"`
+	ID            string    `json:"id"`
+	Profile       string    `json:"profile"`
+	SourceHint    string    `json:"source,omitempty"`
+	Protocol      Protocol  `json:"protocol"`
+	StartedAt     time.Time `json:"startedAt"`
+	Upstream      string    `json:"upstream"`
+	Model         string    `json:"model,omitempty"`
 
 	Kind    RequestKind    `json:"kind,omitempty"`
 	Outcome RequestOutcome `json:"outcome,omitempty"`
@@ -104,14 +107,15 @@ type OpenAIResponsesItemMetadata struct {
 }
 
 type ExchangeResponse struct {
-	Status          int                          `json:"status"`
-	ResponseID      string                       `json:"responseId,omitempty"`
-	Model           string                       `json:"model,omitempty"`
-	LatencyMs       int64                        `json:"latencyMs"`
-	Usage           *ObservedUsage               `json:"usage,omitempty"`
-	ProviderUsage   *ProviderUsage               `json:"providerUsage,omitempty"`
-	Stream          bool                         `json:"stream"`
-	OpenAIResponses *OpenAIResponsesResponseMeta `json:"openaiResponses,omitempty"`
+	Status            int                          `json:"status"`
+	ProviderRequestID string                       `json:"providerRequestId,omitempty"`
+	ResponseObjectID  string                       `json:"responseObjectId,omitempty"`
+	Model             string                       `json:"model,omitempty"`
+	LatencyMs         int64                        `json:"latencyMs"`
+	Usage             *ObservedUsage               `json:"usage,omitempty"`
+	ProviderUsage     *ProviderUsage               `json:"providerUsage,omitempty"`
+	Stream            bool                         `json:"stream"`
+	OpenAIResponses   *OpenAIResponsesResponseMeta `json:"openaiResponses,omitempty"`
 }
 
 type OpenAIResponsesResponseMeta struct {

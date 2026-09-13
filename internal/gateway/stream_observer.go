@@ -13,30 +13,36 @@ type streamObserver struct {
 	upstream io.ReadCloser
 	exchange *Exchange
 	recorder Recorder
+	sink     RecorderSink
 
 	once  sync.Once
 	mu    sync.Mutex
 	state any
 
-	usage        *ProviderUsage
-	terminal     bool
-	overran      bool
-	recordCalled bool
-	maxEvent     int
+	usage            *ProviderUsage
+	terminal         bool
+	overran          bool
+	recordCalled     bool
+	maxEvent         int
+	responseObjectID string
 
 	pending []byte
 }
 
-func newStreamObserver(observer StreamUsageObserver, upstream io.ReadCloser, recorder Recorder, exchange *Exchange) *streamObserver {
+func newStreamObserver(observer StreamUsageObserver, upstream io.ReadCloser, recorder Recorder, sink RecorderSink, exchange *Exchange) *streamObserver {
 	max := observer.MaxStreamEventBytes()
 	if max <= 0 {
 		max = maxSSEResponseEventBytes
+	}
+	if sink == nil {
+		sink = noopSink{}
 	}
 	return &streamObserver{
 		observer: observer,
 		upstream: upstream,
 		exchange: exchange,
 		recorder: recorder,
+		sink:     sink,
 		state:    observer.NewStreamState(),
 		maxEvent: max,
 	}
@@ -87,12 +93,15 @@ func (s *streamObserver) feed(frame []byte) {
 	}
 	for _, payload := range extractDataPayloads(frame) {
 		s.mu.Lock()
-		usage, terminal := s.observer.ParseStreamFrame(s.state, payload)
-		if terminal {
+		obs := s.observer.ParseStreamFrame(s.state, payload)
+		if obs.Terminal {
 			s.terminal = true
 		}
-		if usage != nil {
-			s.usage = usage
+		if obs.Usage != nil {
+			s.usage = obs.Usage
+		}
+		if obs.ResponseObjectID != "" {
+			s.responseObjectID = obs.ResponseObjectID
 		}
 		s.mu.Unlock()
 	}
@@ -130,6 +139,7 @@ func (s *streamObserver) finalize() {
 		s.mu.Lock()
 		usage := s.usage
 		terminal := s.terminal
+		responseID := s.responseObjectID
 		s.pending = nil
 		s.mu.Unlock()
 		if s.exchange == nil {
@@ -138,16 +148,20 @@ func (s *streamObserver) finalize() {
 		if usage != nil {
 			s.exchange.Response.ProviderUsage = usage
 		}
+		if responseID != "" {
+			s.exchange.Response.ResponseObjectID = responseID
+		}
 		if !terminal && streamRequiresTerminal(s.observer) {
 			s.exchange.Outcome = OutcomeStreamTruncated
+			ProviderUsageToObservedApply(s.exchange)
 			if s.exchange.Response.Usage == nil {
-				s.exchange.Response.Usage = &ObservedUsage{Source: providerUsageKind(usage)}
+				s.exchange.Response.Usage = &ObservedUsage{Source: model.MeasurementDerived}
 			}
 			s.exchange.Response.Usage.Truncated = true
 		} else {
 			s.exchange.Outcome = OutcomeUpstreamOK
+			ProviderUsageToObservedApply(s.exchange)
 		}
-		ProviderUsageToObservedApply(s.exchange)
 		s.record()
 	})
 }
@@ -157,7 +171,9 @@ func (s *streamObserver) record() {
 		return
 	}
 	s.recordCalled = true
-	_ = s.recorder.Record(*s.exchange)
+	if err := s.recorder.Record(*s.exchange); err != nil {
+		s.sink.RecordRecorderFailure(s.exchange.Profile, asRecorderError(err))
+	}
 }
 
 func (s *streamObserver) Close() error {
@@ -185,8 +201,10 @@ func streamRequiresTerminal(observer StreamUsageObserver) bool {
 	}
 }
 
-// ProviderUsageToObservedApply writes a derived ObservedUsage into the
-// exchange without overwriting a field the caller has already populated.
+// ProviderUsageToObservedApply assigns the canonical ObservedUsage derived
+// from ProviderUsage exactly once. Existing state such as Truncated is
+// preserved; counts are never merged with zero-as-missing heuristics because
+// a provider-reported zero is distinct from a missing field.
 func ProviderUsageToObservedApply(exchange *Exchange) {
 	if exchange == nil || exchange.Response.ProviderUsage == nil {
 		return
@@ -196,26 +214,6 @@ func ProviderUsageToObservedApply(exchange *Exchange) {
 		exchange.Response.Usage = &observed
 		return
 	}
-	if exchange.Response.Usage.RawInput == 0 && observed.RawInput != 0 {
-		exchange.Response.Usage.RawInput = observed.RawInput
-	}
-	if exchange.Response.Usage.Cached == 0 && observed.Cached != 0 {
-		exchange.Response.Usage.Cached = observed.Cached
-	}
-	if exchange.Response.Usage.CacheCreation == 0 && observed.CacheCreation != 0 {
-		exchange.Response.Usage.CacheCreation = observed.CacheCreation
-	}
-	if exchange.Response.Usage.Output == 0 && observed.Output != 0 {
-		exchange.Response.Usage.Output = observed.Output
-	}
-	if exchange.Response.Usage.Reasoning == 0 && observed.Reasoning != 0 {
-		exchange.Response.Usage.Reasoning = observed.Reasoning
-	}
-}
-
-func providerUsageKind(p *ProviderUsage) model.MeasurementKind {
-	if p == nil {
-		return model.MeasurementDerived
-	}
-	return model.MeasurementMeasured
+	observed.Truncated = exchange.Response.Usage.Truncated
+	exchange.Response.Usage = &observed
 }

@@ -17,14 +17,25 @@ type MetadataObserver interface {
 	ParseMetadata(body []byte) ExchangeRequestMetadata
 }
 
+type ResponseMetadata struct {
+	ResponseObjectID string
+	OpenAIResponses  *OpenAIResponsesResponseMeta
+}
+
 type ResponseObserver interface {
-	ParseResponse(body []byte) *OpenAIResponsesResponseMeta
+	ParseResponse(body []byte) *ResponseMetadata
 	ParseResponseUsage(body []byte) *ProviderUsage
+}
+
+type StreamFrameObservation struct {
+	Usage            *ProviderUsage
+	ResponseObjectID string
+	Terminal         bool
 }
 
 type StreamUsageObserver interface {
 	NewStreamState() any
-	ParseStreamFrame(state any, payload []byte) (*ProviderUsage, bool)
+	ParseStreamFrame(state any, payload []byte) StreamFrameObservation
 	MaxStreamEventBytes() int
 }
 

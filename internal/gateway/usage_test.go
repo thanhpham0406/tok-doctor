@@ -129,9 +129,10 @@ func TestProviderUsage_AllZeroUsageIsObservedZero(t *testing.T) {
 func TestProviderUsage_StreamTerminalEventParsed(t *testing.T) {
 	state := newOpenAIStreamState()
 	obs := OpenAIResponsesObserver{}
-	pu, terminal := obs.ParseStreamFrame(state, []byte(`{"type":"response.completed","usage":{"input_tokens":1000,"output_tokens":50,"input_tokens_details":{"cached_tokens":800},"output_tokens_details":{"reasoning_tokens":20}}}`))
-	if pu == nil || !terminal {
-		t.Fatalf("usage=%+v terminal=%v", pu, terminal)
+	got := obs.ParseStreamFrame(state, []byte(`{"type":"response.completed","response":{"id":"resp_term"},"usage":{"input_tokens":1000,"output_tokens":50,"input_tokens_details":{"cached_tokens":800},"output_tokens_details":{"reasoning_tokens":20}}}`))
+	pu := got.Usage
+	if pu == nil || !got.Terminal {
+		t.Fatalf("usage=%+v terminal=%v", pu, got.Terminal)
 	}
 	if pu.InputTokens == nil || *pu.InputTokens != 1000 {
 		t.Fatalf("input = %+v", pu.InputTokens)
@@ -145,34 +146,37 @@ func TestProviderUsage_StreamTerminalEventParsed(t *testing.T) {
 	if pu.ReasoningOutputTokens == nil || *pu.ReasoningOutputTokens != 20 {
 		t.Fatalf("reasoning = %+v", pu.ReasoningOutputTokens)
 	}
+	if got.ResponseObjectID != "resp_term" {
+		t.Fatalf("response id = %q, want resp_term", got.ResponseObjectID)
+	}
 }
 
 func TestProviderUsage_StreamSkipsNonUsageEvents(t *testing.T) {
 	state := newOpenAIStreamState()
 	obs := OpenAIResponsesObserver{}
-	if pu, _ := obs.ParseStreamFrame(state, []byte(`{"type":"response.created"}`)); pu != nil {
-		t.Fatalf("expected nil usage from response.created, got %+v", pu)
+	if got := obs.ParseStreamFrame(state, []byte(`{"type":"response.created","response":{"id":"resp_created"}}`)); got.Usage != nil {
+		t.Fatalf("expected nil usage from response.created, got %+v", got.Usage)
 	}
-	if pu, _ := obs.ParseStreamFrame(state, []byte(`{"type":"response.in_progress"}`)); pu != nil {
-		t.Fatalf("expected nil usage from response.in_progress, got %+v", pu)
+	if got := obs.ParseStreamFrame(state, []byte(`{"type":"response.in_progress"}`)); got.Usage != nil {
+		t.Fatalf("expected nil usage from response.in_progress, got %+v", got.Usage)
 	}
 }
 
 func TestProviderUsage_StreamMalformedDegrades(t *testing.T) {
 	state := newOpenAIStreamState()
 	obs := OpenAIResponsesObserver{}
-	if pu, _ := obs.ParseStreamFrame(state, []byte(`{not json`)); pu != nil {
-		t.Fatalf("malformed events should not yield usage, got %+v", pu)
+	if got := obs.ParseStreamFrame(state, []byte(`{not json`)); got.Usage != nil {
+		t.Fatalf("malformed events should not yield usage, got %+v", got.Usage)
 	}
 }
 
 func TestProviderUsage_StreamEmptyYieldsNil(t *testing.T) {
 	obs := OpenAIResponsesObserver{}
 	state := newOpenAIStreamState()
-	if pu, _ := obs.ParseStreamFrame(state, nil); pu != nil {
+	if got := obs.ParseStreamFrame(state, nil); got.Usage != nil {
 		t.Fatalf("nil event should yield nil usage")
 	}
-	if pu, _ := obs.ParseStreamFrame(state, []byte{}); pu != nil {
+	if got := obs.ParseStreamFrame(state, []byte{}); got.Usage != nil {
 		t.Fatalf("empty event should yield nil usage")
 	}
 }
@@ -181,7 +185,8 @@ func TestProviderUsage_StreamRawContentNotPersisted(t *testing.T) {
 	secret := "SECRET_REASONING_TEXT_DO_NOT_PERSIST"
 	state := newOpenAIStreamState()
 	obs := OpenAIResponsesObserver{}
-	pu, _ := obs.ParseStreamFrame(state, []byte(fmt.Sprintf(`{"type":"response.completed","usage":{"input_tokens":1,"output_tokens":1},"reasoning":%q}`, secret)))
+	got := obs.ParseStreamFrame(state, []byte(fmt.Sprintf(`{"type":"response.completed","usage":{"input_tokens":1,"output_tokens":1},"reasoning":%q}`, secret)))
+	pu := got.Usage
 	if pu == nil {
 		t.Fatalf("usage nil")
 	}
@@ -280,7 +285,7 @@ func readAllChunks2(r io.Reader) (string, error) {
 
 func TestProviderUsage_ApplyProviderUsage_MeasurementKindMeasured(t *testing.T) {
 	v := int64(100)
-	pu := &ProviderUsage{InputTokens: &v}
+	pu := &ProviderUsage{Source: string(ProtocolOpenAIResponses), InputTokens: &v}
 	ex := Exchange{Response: ExchangeResponse{ProviderUsage: pu}}
 	ProviderUsageToObservedApply(&ex)
 	if ex.Response.Usage == nil || ex.Response.Usage.Source != model.MeasurementMeasured {
@@ -293,7 +298,7 @@ func TestProviderUsage_ApplyProviderUsage_MeasurementKindMeasured(t *testing.T) 
 
 func TestProviderUsage_FreshInputDerived(t *testing.T) {
 	input, cached := int64(1000), int64(750)
-	pu := &ProviderUsage{InputTokens: &input, CacheReadInputTokens: &cached}
+	pu := &ProviderUsage{Source: "anthropic_messages", InputTokens: &input, CacheReadInputTokens: &cached}
 	observed := ProviderUsageToObserved(pu)
 	if observed.Cached != 750 {
 		t.Fatalf("cached = %d, want 750", observed.Cached)
@@ -320,8 +325,8 @@ func TestChain_AllSevenCallsWithUsage_AggregateExact(t *testing.T) {
 	for _, v := range cached {
 		wantCached += v
 	}
-	if c.ProviderInput == nil || c.ProviderInput.ValueOrZero() != wantInput {
-		t.Fatalf("provider input = %+v, want %d", c.ProviderInput, wantInput)
+	if c.ProviderTotalInput == nil || c.ProviderTotalInput.ValueOrZero() != wantInput {
+		t.Fatalf("provider total input = %+v, want %d", c.ProviderTotalInput, wantInput)
 	}
 	if c.ProviderCachedInput == nil || c.ProviderCachedInput.ValueOrZero() != wantCached {
 		t.Fatalf("provider cached = %+v, want %d", c.ProviderCachedInput, wantCached)
@@ -341,8 +346,8 @@ func TestChain_MissingUsageOneOfSeven_AggregateUnknown(t *testing.T) {
 		t.Fatalf("chains = %d, want 1", len(chains))
 	}
 	c := chains[0]
-	if c.ProviderInput != nil {
-		t.Fatalf("provider input should be unknown when one call missing usage, got %+v", c.ProviderInput)
+	if c.ProviderTotalInput != nil {
+		t.Fatalf("provider total input should be unknown when one call missing usage, got %+v", c.ProviderTotalInput)
 	}
 	if c.UsageObservedCalls == nil || *c.UsageObservedCalls != 5 || c.UsageTotalCalls == nil || *c.UsageTotalCalls != 6 {
 		t.Fatalf("usage observed = %+v/%+v", c.UsageObservedCalls, c.UsageTotalCalls)
@@ -358,8 +363,8 @@ func TestChain_MissingCachedOnly_AggregateUnknown(t *testing.T) {
 	if c.ProviderCachedInput != nil {
 		t.Fatalf("provider cached should be unknown when one call missing, got %+v", c.ProviderCachedInput)
 	}
-	if c.ProviderInput == nil || c.ProviderInput.ValueOrZero() != 600 {
-		t.Fatalf("provider input should still aggregate when only cached missing, got %+v", c.ProviderInput)
+	if c.ProviderTotalInput == nil || c.ProviderTotalInput.ValueOrZero() != 600 {
+		t.Fatalf("provider total input should still aggregate when only cached missing, got %+v", c.ProviderTotalInput)
 	}
 }
 
@@ -375,8 +380,8 @@ func TestChain_MissingOutputOnly_AggregateUnknown(t *testing.T) {
 	if c.ProviderOutput != nil {
 		t.Fatalf("provider output should be unknown when one call missing, got %+v", c.ProviderOutput)
 	}
-	if c.ProviderInput == nil || c.ProviderInput.ValueOrZero() != 600 {
-		t.Fatalf("provider input should still aggregate when only output missing, got %+v", c.ProviderInput)
+	if c.ProviderTotalInput == nil || c.ProviderTotalInput.ValueOrZero() != 600 {
+		t.Fatalf("provider total input should still aggregate when only output missing, got %+v", c.ProviderTotalInput)
 	}
 }
 
@@ -514,6 +519,7 @@ func observedMetricChainWithUsage(inputs, cached []int64) []Exchange {
 			caV = cached[i]
 		}
 		base[i].Response.ProviderUsage = &ProviderUsage{
+			Source:               string(ProtocolOpenAIResponses),
 			InputTokens:          &inV,
 			CacheReadInputTokens: &caV,
 		}
@@ -561,6 +567,7 @@ func setProviderUsageAll(exchanges []Exchange, inputs, cached []int64) {
 		}
 		inV, caV := inputs[i], cached[i]
 		exchanges[i].Response.ProviderUsage = &ProviderUsage{
+			Source:               string(ProtocolOpenAIResponses),
 			InputTokens:          &inV,
 			CacheReadInputTokens: &caV,
 		}
