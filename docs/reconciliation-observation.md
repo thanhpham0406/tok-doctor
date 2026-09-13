@@ -81,6 +81,23 @@ A single observation may mix kinds, for example:
 
 There is no shared `kind` for the whole usage record.
 
+## Outcome vs Completeness
+
+Outcome and completeness answer different questions and must not be conflated:
+
+- **Outcome** describes how the request ended — `succeeded`, `provider_error`,
+  `transport_failure`, `canceled`, `truncated`, or `unknown`.
+- **Completeness** describes how much of the data was observed — `complete`,
+  `partial`, or `unknown`.
+
+A request that fails can still be completely observed, because the gateway
+finished observing a failure even when the provider reported no usage. For
+example, an upstream HTTP error is `provider_error` + `complete`: the outcome is
+a failure, but nothing about that failure is missing. Only `truncated` forces
+`partial`; an unknown outcome forces `unknown`.
+
+Completeness is reported by the adapter. The canonical model never infers it.
+
 ## Completeness
 
 - `complete` — the adapter has evidence that the observation finished according
@@ -89,8 +106,6 @@ There is no shared `kind` for the whole usage record.
   missing expected parts.
 - `unknown` — there is not enough evidence to decide between complete and
   partial.
-
-Completeness is reported by the adapter. The canonical model never infers it.
 
 ## Authority Is Not Decided Here
 

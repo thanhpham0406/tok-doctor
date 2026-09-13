@@ -34,6 +34,7 @@ func validObservation() Observation {
 			Total:              NewMeasurement(175, MeasurementDerived),
 		},
 		Completeness: ObservationCompletenessComplete,
+		Outcome:      ObservationOutcomeSucceeded,
 		Evidence: []Evidence{
 			{Kind: EvidenceSourceValue, Source: "gateway", Record: "ex-1"},
 		},
@@ -108,6 +109,27 @@ func TestValidObservationCompleteness(t *testing.T) {
 	}
 }
 
+func TestValidObservationOutcome(t *testing.T) {
+	valid := []ObservationOutcome{
+		ObservationOutcomeUnknown,
+		ObservationOutcomeSucceeded,
+		ObservationOutcomeProviderError,
+		ObservationOutcomeTransportFailure,
+		ObservationOutcomeCanceled,
+		ObservationOutcomeTruncated,
+	}
+	for _, outcome := range valid {
+		if !ValidObservationOutcome(outcome) {
+			t.Fatalf("outcome %q should be valid", outcome)
+		}
+	}
+	for _, outcome := range []ObservationOutcome{"", "ok", "failed", "succeeded "} {
+		if ValidObservationOutcome(outcome) {
+			t.Fatalf("outcome %q should be rejected", outcome)
+		}
+	}
+}
+
 func TestObservationValidateAcceptsValid(t *testing.T) {
 	if err := validObservation().Validate(); err != nil {
 		t.Fatalf("valid observation rejected: %v", err)
@@ -159,6 +181,8 @@ func TestObservationValidateStructuralRules(t *testing.T) {
 		{"invalid scope", func(o *Observation) { o.Scope = "run" }, "invalid scope"},
 		{"missing source", func(o *Observation) { o.Source = "" }, "source is required"},
 		{"invalid completeness", func(o *Observation) { o.Completeness = "done" }, "invalid completeness"},
+		{"missing outcome", func(o *Observation) { o.Outcome = "" }, "invalid outcome"},
+		{"invalid outcome", func(o *Observation) { o.Outcome = "failed" }, "invalid outcome"},
 		{"finished before started", func(o *Observation) {
 			o.StartedAt = &started
 			o.FinishedAt = &earlier
@@ -252,6 +276,7 @@ func TestObservationJSONRoundTrip(t *testing.T) {
 		decoded.Scope != original.Scope ||
 		decoded.Source != original.Source ||
 		decoded.Model != original.Model ||
+		decoded.Outcome != original.Outcome ||
 		decoded.Completeness != original.Completeness {
 		t.Fatalf("scalar fields changed: %+v", decoded)
 	}
@@ -406,7 +431,7 @@ func TestObservationJSONHasOnlyContractFields(t *testing.T) {
 	allowedTop := map[string]bool{
 		"schemaVersion": true, "id": true, "channel": true, "scope": true,
 		"source": true, "identity": true, "startedAt": true, "finishedAt": true,
-		"model": true, "usage": true, "completeness": true, "evidence": true,
+		"model": true, "usage": true, "outcome": true, "completeness": true, "evidence": true,
 	}
 	for key := range raw {
 		if !allowedTop[key] {

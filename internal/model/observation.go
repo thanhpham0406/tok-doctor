@@ -58,6 +58,27 @@ func ValidObservationCompleteness(value ObservationCompleteness) bool {
 	}
 }
 
+type ObservationOutcome string
+
+const (
+	ObservationOutcomeUnknown          ObservationOutcome = "unknown"
+	ObservationOutcomeSucceeded        ObservationOutcome = "succeeded"
+	ObservationOutcomeProviderError    ObservationOutcome = "provider_error"
+	ObservationOutcomeTransportFailure ObservationOutcome = "transport_failure"
+	ObservationOutcomeCanceled         ObservationOutcome = "canceled"
+	ObservationOutcomeTruncated        ObservationOutcome = "truncated"
+)
+
+func ValidObservationOutcome(outcome ObservationOutcome) bool {
+	switch outcome {
+	case ObservationOutcomeUnknown, ObservationOutcomeSucceeded, ObservationOutcomeProviderError,
+		ObservationOutcomeTransportFailure, ObservationOutcomeCanceled, ObservationOutcomeTruncated:
+		return true
+	default:
+		return false
+	}
+}
+
 type ObservationIdentity struct {
 	ExchangeID             string `json:"exchangeId,omitempty"`
 	AgentRequestID         string `json:"agentRequestId,omitempty"`
@@ -91,6 +112,7 @@ type Observation struct {
 	FinishedAt    *time.Time              `json:"finishedAt,omitempty"`
 	Model         string                  `json:"model,omitempty"`
 	Usage         ObservationUsage        `json:"usage"`
+	Outcome       ObservationOutcome      `json:"outcome"`
 	Completeness  ObservationCompleteness `json:"completeness"`
 	Evidence      []Evidence              `json:"evidence,omitempty"`
 }
@@ -113,6 +135,9 @@ func (o Observation) Validate() error {
 	}
 	if !ValidObservationCompleteness(o.Completeness) {
 		return fmt.Errorf("validate observation %s: invalid completeness %q", o.ID, o.Completeness)
+	}
+	if !ValidObservationOutcome(o.Outcome) {
+		return fmt.Errorf("validate observation %s: invalid outcome %q", o.ID, o.Outcome)
 	}
 	if o.StartedAt != nil && o.FinishedAt != nil && o.FinishedAt.Before(*o.StartedAt) {
 		return fmt.Errorf("validate observation %s: finishedAt precedes startedAt", o.ID)
