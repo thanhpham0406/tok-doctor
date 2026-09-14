@@ -198,14 +198,71 @@ truth.
 ## Matcher
 
 A matcher groups observations that describe the same underlying activity. It
-uses identity and time. Matching logic is outside this contract and does not
-live in `internal/model`.
+only matches a request-scope `gateway` observation against a turn-scope
+`session_transcript` observation. A request is never matched directly against a
+session-scope aggregate, and observations of other channels or scopes are not
+candidates. Matching logic is outside this contract and does not live in
+`internal/model`.
+
+Priority is deterministic:
+
+1. **Identity first.** If the two sides share a non-empty value in the *same*
+   identity namespace (`exchangeId`, `agentRequestId`, `providerRequestId`,
+   `responseObjectId`, `parentResponseObjectId`, `sessionId`, `turnId`,
+   `invocationId`, `chainId`), the pair is matched with `high` confidence.
+   Identical strings in different namespaces are not a shared identity, and
+   `Observation.ID` is never used as a correlation key.
+2. **Heuristic second.** Without a shared identity, a candidate must have both
+   `StartedAt` values present, fall inside the matcher's configured time window,
+   and have compatible models (both present and different rejects; one side
+   missing does not reject). The time window is necessary but not sufficient:
+   the pair must also carry at least one corroborating signal, either an exact
+   model match or at least one comparable usage field with an equal value. Time
+   proximity alone never produces a candidate. Usage similarity otherwise only
+   ranks candidates; it never rejects one and token totals are never a match key.
+   A unique mutual-best candidate becomes a `medium` match.
+
+Ambiguity is never resolved by guessing: multiple equivalent top candidates
+leave the result `ambiguous`, and no candidate leaves it `unmatched`. Matching
+is one-to-one and independent of input order.
+
+The matcher returns one record per eligible observation and accounts for every
+one exactly once:
+
+- a matched pair carries both observation IDs;
+- a gateway-only result carries the gateway ID and a `gateway` side;
+- a transcript-only result carries the transcript ID and a `transcript` side,
+  and is emitted only when the transcript is neither matched nor consumed by an
+  ambiguity;
+- an ambiguous gateway result carries the gateway ID, a `gateway` side, and a
+  sorted, duplicate-free `CandidateTranscriptIDs` list. It keeps all candidate
+  transcripts that caused the ambiguity so downstream can explain and account
+  every transcript observation. A transcript listed there is accounted by the
+  ambiguity and is not emitted again as a transcript-only result, and no
+  candidate transcript is silently dropped.
+
+Result IDs are stable labels derived from the involved observation IDs
+(`match:<gateway-id>=<transcript-id>`, `match:gateway:<gateway-id>`,
+`match:transcript:<transcript-id>`), but they are never used as correlation
+identity. Candidate IDs never appear in the result ID.
 
 ## Reconciler
 
-The reconciler compares usage across matched observations and reports deltas.
-It distinguishes measured from estimated values and never presents estimated
-attribution as provider-reported usage.
+The reconciler accepts only matched pairs and never searches for matches itself.
+It compares each of the seven usage fields, reporting `left` (gateway), `right`
+(transcript), a delta, and a status. The delta is `transcript - gateway`.
+
+- Both sides available: `delta = transcript - gateway`, status `equal` when the
+  delta is zero and `different` otherwise.
+- Either side missing or unknown: status `unavailable` and `delta = nil`. A
+  missing measurement is never treated as explicit zero, so `ValueOrZero()` is
+  not used to fabricate a delta.
+
+Overall status is `different` when any comparable field differs, `equal` when at
+least one field is comparable and all comparable fields agree, and `unavailable`
+when no field is comparable. The reconciler preserves measurement kinds, does
+not promote estimates to provider-measured values, and does not overwrite the
+source observations.
 
 ## Scope Safety
 

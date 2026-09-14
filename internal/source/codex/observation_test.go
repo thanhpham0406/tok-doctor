@@ -151,6 +151,37 @@ func TestObservationsFromSessionTurnModelPreference(t *testing.T) {
 	}
 }
 
+func TestObservationsFromSessionTurnStartedAt(t *testing.T) {
+	first := time.Date(2026, 3, 4, 5, 7, 8, 0, time.UTC)
+	second := time.Date(2026, 3, 4, 5, 9, 10, 0, time.UTC)
+	session := obsSession()
+	session.Turns[0].Timestamp = &first
+	session.Turns[1].Timestamp = &second
+
+	observations := obsProject(t, session)
+	if observations[1].StartedAt == nil || !observations[1].StartedAt.Equal(first) {
+		t.Fatalf("turn 1 startedAt = %v, want %v", observations[1].StartedAt, first)
+	}
+	if observations[2].StartedAt == nil || !observations[2].StartedAt.Equal(second) {
+		t.Fatalf("turn 2 startedAt = %v, want %v", observations[2].StartedAt, second)
+	}
+	for _, observation := range observations {
+		if observation.FinishedAt != nil {
+			t.Fatalf("observation %s finishedAt = %v, want nil", observation.ID, observation.FinishedAt)
+		}
+	}
+}
+
+func TestObservationsFromSessionTurnMissingTimestampStaysNil(t *testing.T) {
+	observations := obsProject(t, obsSession())
+	if observations[1].StartedAt != nil {
+		t.Fatalf("turn startedAt = %v, want nil", observations[1].StartedAt)
+	}
+	if observations[1].FinishedAt != nil {
+		t.Fatalf("turn finishedAt = %v, want nil", observations[1].FinishedAt)
+	}
+}
+
 func TestObservationsFromSessionIdentityNamespaces(t *testing.T) {
 	observations := obsProject(t, obsSession())
 

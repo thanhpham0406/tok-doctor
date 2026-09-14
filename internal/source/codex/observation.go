@@ -73,6 +73,7 @@ func projectTurnObservation(session model.Session, turn model.Turn) model.Observ
 		Scope:         model.ObservationScopeTurn,
 		Source:        string(model.AgentCodex),
 		Identity:      model.ObservationIdentity{SessionID: session.ID, TurnID: turn.ID},
+		StartedAt:     cloneTime(turn.Timestamp),
 		Model:         turnModel(session, turn),
 		Usage:         projectObservationUsage(turn.Usage),
 		Outcome:       model.ObservationOutcomeUnknown,
