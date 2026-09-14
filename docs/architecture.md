@@ -2,261 +2,217 @@
 
 TokDoctor is a local-first token profiler and context optimizer for AI coding agents.
 
-Its architecture is designed around one core requirement:
+One requirement shapes the whole design:
 
 > Platform-specific data collection must be isolated from platform-independent analysis.
 
-TokDoctor should remain lightweight, fast, easy to extend, and suitable for open-source contributions.
+TokDoctor ships as a single binary, prefers the standard library, and keeps platform parsing at the edge. Components below are labeled `Current`, `Planned`, or `Future`. `Current` means code exists today. `Planned` means the direction is agreed but the code does not exist yet. `Future` is outside current scope.
 
-## Goals
+## Goals and Non-Goals
 
-The architecture should support:
+Goals:
 
-- local-first analysis
+- local-first analysis with no account and no cloud dependency
 - single-binary distribution
-- low memory overhead
-- streaming large session files
+- streaming access to large session files
 - multiple AI coding-agent sources
 - deterministic token and context diagnostics
-- terminal, JSON, and optional Web UI output
+- terminal, JSON, and optional local Web UI output
 - future community-built adapters
-- future historical comparison and optimization workflows
 
-The architecture should avoid:
+Non-goals:
 
 - framework-heavy layering
 - Java-style service/repository abstractions
-- cloud dependencies for local analysis
-- platform-specific logic leaking into core analysis
+- platform-specific logic in core analysis
 - duplicated analysis logic across CLI and Web UI
-- unnecessary infrastructure before product needs justify it
+- cloud infrastructure for local features
+- abstractions added before a real use case needs them
 
 ## High-Level Architecture
 
-```text
-External Agent Data
-        |
-        v
-+---------------------+
-|    Source Adapter   |
-+----------+----------+
-           |
-           v
-+---------------------+
-|   Canonical Model   |
-+----------+----------+
-           |
-           v
-+---------------------+
-|      Analyzer       |
-+----------+----------+
-           |
-           v
-+---------------------+
-|     Rule Engine     |
-+----------+----------+
-           |
-           v
-+---------------------+
-|   Analysis Result   |
-+----------+----------+
-           |
-     +-----+-----+
-     |     |     |
-     v     v     v
- Terminal JSON  Web UI
+Two canonical pipelines converge at the inspect core. The session pipeline produces an analysis result. The observation pipeline produces a reconciliation result. Both feed one inspection result that presentation layers render.
+
+```mermaid
+flowchart TD
+    Raw[Platform data and gateway capture]
+    Raw --> Adapter[Source adapters and producers]
+
+    Adapter --> Session[Canonical Session]
+    Session --> Analyzer[Analyzer]
+    Analyzer --> Rules[Rule engine]
+    Rules --> Analysis[Analysis result]
+
+    Adapter --> Observation[Canonical Observation]
+    Observation --> Catalog[Observation catalog - planned]
+    Catalog --> Matcher[Matcher - planned]
+    Matcher --> Reconciler[Reconciler - planned]
+    Reconciler --> Reconciliation[Reconciliation result]
+
+    Analysis --> Inspect[Inspect core - planned]
+    Reconciliation --> Inspect
+
+    Inspect --> Terminal[Terminal]
+    Inspect --> JSON[JSON]
+    Inspect --> WebUI[Local Web UI]
 ```
 
-Initial sources:
+`Current`: the canonical `Session` and `Observation` models, the analyzer, the observation producers, and the presentation layers. `Planned`: the observation catalog, matcher, reconciler, and the unified inspect core. Today `tok inspect <session-id>` resolves a session only; it does not yet query observations or reconciliation.
 
-```text
-Codex
-Claude Code
-9Router
+## Platform Sources and Observation Channels
+
+### Platform sources
+
+| Source | Kind | Current state |
+| --- | --- | --- |
+| Codex | local session files | session and turn normalization; observation producer |
+| Claude Code | local session files | session and turn normalization; not an observation producer |
+| 9Router | local endpoint | detection and endpoint probe only |
+| TokDoctor Gateway | local HTTP capture | request capture; gateway observation producer |
+
+Additional sources are added based on real community demand.
+
+### Observation channels
+
+A **channel** describes how data was observed, not what it represents. There are three channels, defined by the canonical contract:
+
+| Channel | Meaning |
+| --- | --- |
+| `gateway` | the gateway observed the HTTP request/response directly |
+| `agent_telemetry` | a coding agent runtime recorded the event or request telemetry |
+| `session_transcript` | the record was reconstructed from a persisted session log |
+
+A **scope** describes what level an observation represents: `request`, `turn`, or `session`.
+
+Channel and scope are independent. An adapter does not have to produce all channels. A workflow may collect one, two, or three channels depending on what the data actually provides. A missing channel is reported as unavailable or missing through coverage. It is never fabricated and never converted into an explicit zero.
+
+### Ideal request path
+
+```mermaid
+flowchart LR
+    Runtime[Codex or Claude runtime] --> Gateway[TokDoctor Gateway]
+    Gateway --> Provider[Provider API]
+    Runtime --> SessionTranscript[Session transcript]
+    Runtime --> AgentTelemetry[Agent telemetry]
+    Gateway --> GatewayObservation[Gateway observation]
+    SessionTranscript --> Observations[Canonical observations]
+    AgentTelemetry --> Observations
+    GatewayObservation --> Observations
 ```
 
-Additional sources should be added based on real community demand.
+The runtime produces agent telemetry and a session transcript. The gateway produces a gateway observation. All three are independent observations of the same activity and may later be matched.
 
 ## Dependency Direction
 
-The dependency direction must remain simple:
+Platform-specific details stay at the edge. The important rule is not the exact package diagram.
+
+Forbidden dependencies:
 
 ```text
-Source Adapter
-      |
-      v
-Canonical Model
-      ^
-      |
-Analyzer
-      |
-      v
-Rule Engine
-      |
-      v
-Analysis Result
-      |
-      v
-Presentation
+model      -> codex or claude or router9
+rule       -> platform parser
+rule       -> presentation
+analyze    -> terminal renderer
+matcher    -> raw capture files
+reconciler -> raw capture files
+web UI     -> raw source files
 ```
 
-The important rule is not the exact package diagram. The important rule is that platform-specific details stay at the edge.
-
-The following dependencies are not allowed:
-
-```text
-model   -> codex
-rule    -> codex parser
-rule    -> web UI
-analyze -> terminal renderer
-web UI  -> raw source files
-```
-
-Core analysis should operate on normalized data only.
+Core analysis, matching, and reconciliation operate on canonical data only.
 
 ## Main Components
 
-### 1. Source Adapters
+### 1. Source Adapters and Producers
 
-Source adapters are the platform-specific boundary.
+A source adapter owns platform-specific data access and normalization. A **producer** is a platform-specific projection from normalized or raw source data into `model.Observation`.
 
-Examples:
-
-```text
-CodexAdapter
-ClaudeAdapter
-9RouterAdapter
-```
-
-An adapter may:
+An adapter or producer may:
 
 - detect whether a source exists
-- discover available sessions or usage records
-- open and read source data
-- parse platform-specific records
-- normalize source data into the canonical model
-- preserve authoritative provider-reported usage
+- discover sessions or usage records
+- stream and read raw data
+- parse platform-specific formats
+- normalize into canonical `model.Session`
+- project data into canonical `model.Observation`
+- preserve provenance and provider-reported usage
 
-An adapter must not:
+An adapter or producer must not:
 
-- calculate health scores
-- execute generic diagnostic rules
-- generate generic optimization recommendations
-- render terminal output
-- contain Web UI logic
+- match observations across sources
+- decide cross-source authority
+- reconcile token differences
+- run generic diagnostic rules
+- render terminal or Web UI output
 
-Conceptual source contract:
+Current producers:
 
-```go
-type Source interface {
-	Name() string
-	Detect(context.Context) bool
-	Sessions(context.Context) ([]SessionRef, error)
-	Read(context.Context, SessionRef) (model.Session, error)
-}
-```
+| Producer | Input | Output |
+| --- | --- | --- |
+| `gateway.ObservationFromExchange` | gateway exchange record | request-scope `gateway` observation |
+| `codex.ObservationsFromSession` | canonical codex session | session-scope and turn-scope `session_transcript` observations |
 
-The exact interface may evolve with implementation needs. Do not add methods speculatively.
+Both producers are implemented and tested, but are not yet wired into a catalog or a CLI path. Claude and 9Router have no observation producer yet.
+
+Do not create one large interface that every adapter must implement for every capability. Keep interfaces small and define them near the consumer. The adapter contract is described further in [`adapter-spec.md`](adapter-spec.md).
 
 ### 2. Canonical Model
 
-The canonical model is the platform-independent representation of AI-agent activity.
+The canonical model is the platform-independent representation of agent activity. It is the most important architectural boundary in TokDoctor. Concepts:
 
-It is the most important architectural boundary in TokDoctor.
+| Concept | Role |
+| --- | --- |
+| `Session` | agent activity container used by the analyzer |
+| `Turn` | per-turn slice of a session |
+| `Invocation` | a model invocation within a session |
+| `ContextComponent` | attributed piece of request context |
+| `Usage` | token usage block |
+| `Measurement` | a value plus its measurement kind |
+| `Observation` | one measurement from one channel and scope |
+| `ObservationIdentity` | correlation identity for an observation |
+| `Finding` | diagnostic produced by a rule |
+| `Evidence` | audit-safe reference to the origin of a value |
 
-Core concepts may include:
+Key rules:
 
-```text
-Session
-Turn
-Event
-ContextItem
-ToolCall
-ToolOutput
-Usage
-Finding
-Evidence
+- `Session` serves agent-activity analysis. `Observation` is one measurement from one channel and one scope.
+- An observation ID is a record identifier, not a correlation ID.
+- Correlation identity lives in `ObservationIdentity`, and each field is its own namespace.
+- Identity is never invented from a timestamp, model name, or token total.
+- `model.Finding` is currently a scaffold (`RuleID`, `Title`). Severity, confidence, impact, and recommendation are `Planned` per [`rule-spec.md`](rule-spec.md).
+
+The canonical model must not contain source-specific record types. The normative, field-level observation contract is [`reconciliation-observation.md`](reconciliation-observation.md); this document does not restate it.
+
+### 3. Observation Catalog (Planned)
+
+The catalog will collect and query canonical observations. It filters by source, channel, scope, and time. It does not match or reconcile on its own.
+
+### 4. Matcher (Planned)
+
+The matcher groups observations that describe the same underlying activity. It prefers explicit identity, may use time and model as weak evidence, and never compares usage. It does not decide authority. Matching logic must not live in `internal/model`.
+
+### 5. Reconciler (Planned)
+
+The reconciler compares only observations already matched by the matcher. It never compares incompatible scopes, keeps missing distinct from explicit zero, and never presents an estimate as a provider measurement. It returns channel coverage, comparable fields, deltas, and conflicts. Observations that share the same underlying source record are not treated as independent confirmation.
+
+```mermaid
+flowchart LR
+    Producer[Observation producer] --> Catalog[Observation catalog]
+    Catalog --> Matcher[Matcher]
+    Matcher --> Reconciler[Reconciler]
+    Reconciler --> Result[Reconciliation result]
 ```
 
-Example:
+### 6. Analyzer (Current)
 
-```go
-type Session struct {
-	ID        string
-	Agent     Agent
-	Model     string
-	StartedAt time.Time
-	EndedAt   *time.Time
+The analyzer orchestrates platform-independent session analysis. It receives normalized sessions, derives metrics, prepares rule input, executes rules, aggregates findings, and produces an `analyze.Result`. It does not read platform files, parse source payloads, mutate session data, or render output.
 
-	Turns []Turn
-	Usage Usage
-}
-```
+The analyzer is the session pipeline. It is not the reconciliation pipeline.
 
-Example usage model:
+### 7. Rule Engine (Current scaffold)
 
-```go
-type Usage struct {
-	Input     int64
-	Cached    int64
-	Output    int64
-	Reasoning int64
-	Total     int64
-}
-```
+Rules detect token and context problems from canonical data. The registry is currently a scaffold with no diagnostic rules enabled.
 
-The canonical model must not contain source-specific concepts such as:
-
-```text
-Codex rollout JSONL record types
-Claude-specific session paths
-9Router HTTP endpoint shapes
-```
-
-Those details belong in adapters.
-
-### 3. Analyzer
-
-The analyzer orchestrates platform-independent analysis.
-
-Responsibilities:
-
-- receive normalized session data
-- derive analysis metrics
-- prepare rule input
-- execute registered rules
-- aggregate findings
-- produce an `AnalysisResult`
-
-The analyzer should not:
-
-- read Codex files directly
-- query 9Router directly
-- parse source-specific payloads
-- render UI
-- mutate original session data
-
-Conceptually:
-
-```text
-model.Session
-     |
-     v
-Analyzer
-     |
-     +--> derived metrics
-     +--> rule execution
-     +--> finding aggregation
-     |
-     v
-AnalysisResult
-```
-
-### 4. Rule Engine
-
-Rules detect token and context problems.
-
-Examples:
+Rule families:
 
 ```text
 MCP001   unused-mcp
@@ -271,630 +227,309 @@ CTX001   runaway-context-growth
 INST001  oversized-instructions
 ```
 
-Rules should be deterministic by default.
+Rules must be deterministic by default. A rule detects one clear problem, returns evidence, reports severity and confidence, estimates or measures token impact, and provides an actionable recommendation.
 
-A rule should:
+Rules must not:
 
-- detect one clear problem
-- return evidence
-- assign severity
-- assign confidence
-- measure or estimate token impact when possible
-- provide an actionable recommendation
+- read raw platform data
+- contain presentation logic
+- mutate source data
+- present estimates as provider measurements
 
-Conceptual rule contract:
+Reconciliation is not a rule, and an `Observation` is not forced into a `Session`.
 
-```go
-type Rule interface {
-	ID() string
-	Analyze(context.Context, *analyze.Context) []model.Finding
-}
-```
+### 8. Inspect Core (Planned)
 
-Rules should not mutate session data.
+`inspect` is the unified application use case, not just a CLI renderer. Its conceptual result may include:
 
-Rules must not depend on raw platform formats.
+- selected entity: session, turn, or request
+- analysis result
+- observations
+- matched group
+- reconciliation result
+- evidence
 
-### 5. Analysis Result
+Interactive selection belongs to the CLI or presentation layer. Discovery, lookup, matching, and reconciliation belong to the application and core.
 
-`AnalysisResult` is the shared output of the core analysis pipeline.
+### 9. Presentation (Current)
 
-It should contain enough structured data for all presentation layers.
+Presentation layers are terminal, JSON, and the local Web UI. They may format, group, sort, and serialize results. They must not calculate waste, parse session files, execute source logic, perform matching or reconciliation, or redefine rule behavior.
 
-Conceptually:
-
-```text
-AnalysisResult
-├── source
-├── session metadata
-├── token usage
-├── derived metrics
-├── findings
-├── health score
-└── recoverable token estimates
-```
-
-Terminal, JSON, and Web UI output should all render this same result.
-
-This prevents business logic from being duplicated in presentation code.
-
-### 6. Presentation
-
-TokDoctor has multiple presentation modes.
-
-```text
-Terminal
-JSON
-Local Web UI
-```
-
-Presentation layers may:
-
-- format findings
-- sort or group results for display
-- render tables
-- render charts
-- serialize results
-
-Presentation layers must not:
-
-- calculate waste
-- parse session files
-- execute source-specific logic
-- redefine rule behavior
-
-## CLI and Web UI
-
-TokDoctor is CLI-first.
-
-Expected usage:
-
-```bash
-tok doctor
-tok doctor --ui
-tok ui
-tok sessions
-tok inspect <session>
-```
-
-All core features must remain usable without the Web UI.
-
-### Terminal
-
-The terminal renderer is the default user experience.
-
-Example:
-
-```text
-Token Health                           64/100
-
-Total input                           148,291
-Potentially recoverable          ~32k-41k
-
-HIGH  TOOL001
-Oversized tool output
-
-git diff produced 128 KB.
-Estimated impact: ~12k-16k tokens.
-```
-
-### JSON
-
-JSON output exists for:
-
-- automation
-- CI
-- integrations
-- future editor plugins
-- external tooling
-
-Example:
-
-```bash
-tok doctor --format json
-```
-
-### Web UI
-
-The Web UI is an optional local presentation layer.
-
-Architecture:
-
-```text
-Preact
-   |
-   v
-HTTP API
-   |
-   v
-Go application/core
-```
-
-The Web UI must consume the same `AnalysisResult` used by terminal and JSON output.
-
-The local server must bind to:
-
-```text
-127.0.0.1
-```
-
-by default.
-
-The UI may be embedded into the Go binary using:
-
-```go
-//go:embed
-```
-
-This preserves single-binary distribution.
-
-## Package Structure
-
-Initial package organization:
-
-```text
-tokdoctor/
-|
-├── cmd/
-│   └── tok/
-│       └── main.go
-|
-├── internal/
-│   ├── model/
-│   ├── source/
-│   │   ├── codex/
-│   │   ├── router9/
-│   │   └── claude/
-│   │
-│   ├── analyze/
-│   ├── rule/
-│   │   ├── mcp/
-│   │   ├── tool/
-│   │   ├── context/
-│   │   └── instruction/
-│   │
-│   ├── token/
-│   ├── report/
-│   │   ├── terminal/
-│   │   └── json/
-│   │
-│   ├── webui/
-│   └── config/
-|
-├── ui/
-├── fixtures/
-└── docs/
-```
-
-This structure may evolve as real use cases appear.
-
-Do not create packages purely to match this diagram.
-
-Packages should exist because they own meaningful behavior.
-
-## Go Design Principles
-
-TokDoctor follows idiomatic Go rather than framework-driven Clean Architecture.
-
-### Standard Library First
-
-Prefer:
-
-```text
-encoding/json
-bufio
-net/http
-log/slog
-context
-errors
-embed
-io
-os
-path/filepath
-```
-
-before introducing external dependencies.
-
-### Small Interfaces
-
-Interfaces should represent real variation or boundaries.
-
-Do not create interfaces for every concrete type.
-
-Prefer interfaces near their consumers.
-
-### Explicit Dependency Injection
-
-Use constructors and explicit wiring.
-
-Example:
-
-```go
-source := codex.New(...)
-analyzer := analyze.New(...)
-app := New(source, analyzer)
-```
-
-Avoid dependency injection frameworks.
-
-### Concrete Types by Default
-
-Use concrete types until an abstraction provides real value.
-
-Avoid:
-
-```text
-Service
-ServiceImpl
-Repository
-RepositoryImpl
-Manager
-BaseAnalyzer
-AbstractRule
-```
-
-unless the design genuinely requires them.
-
-### Clear Package Ownership
-
-Avoid generic packages such as:
-
-```text
-utils
-common
-helpers
-base
-misc
-impl
-```
-
-Prefer:
-
-```text
-token.Estimate
-codex.Parse
-analyze.Analyze
-terminal.Render
-```
-
-### Comments
-
-Prefer self-explanatory code.
-
-Comments should explain:
-
-- non-obvious intent
-- important constraints
-- compatibility behavior
-- protocol quirks
-- deliberate workarounds
-
-Comments should not narrate obvious code.
+All presentation layers consume the same result produced by the core. The local Web UI binds to `127.0.0.1` by default and stays usable only as a presentation layer.
 
 ## Token Accuracy Model
 
-TokDoctor must distinguish authoritative measurements from local estimates.
+Two independent axes must not be conflated.
 
-Suggested confidence levels:
+### Measurement kind (value provenance)
+
+Defined by `model.MeasurementKind`:
+
+| Kind | Meaning |
+| --- | --- |
+| `measured` | reported directly by a provider or authoritative source |
+| `derived` | computed deterministically from data that has provenance |
+| `counted` | counted directly from local records |
+| `estimated` | inferred, with meaningful uncertainty |
+| `unknown` | not enough data to classify |
+
+A `derived` measurement may be trustworthy, but it is never called provider-measured. A missing value has a nil value; an explicit zero is a measured value of zero.
+
+### Confidence (finding and inference)
+
+Confidence describes how certain TokDoctor is about a diagnosis, independently of how a value was produced:
 
 ```text
-measured
 high
 medium
 low
 ```
 
-Definitions:
+The current `model.Finding` does not yet carry a confidence field; this axis is defined for rules per [`rule-spec.md`](rule-spec.md).
 
-### measured
+Provider-reported usage takes precedence over local estimation. TokDoctor must never present estimated attribution as exact provider usage.
 
-Directly reported by a provider or authoritative source.
+## Data Flow Examples
 
-Example:
+### Codex
 
-```text
-input_tokens = 82,410
+The Codex adapter serves both pipelines: analysis through `model.Session`, and observation projection through `ObservationsFromSession`.
+
+```mermaid
+flowchart TD
+    Rollout[Codex rollout JSONL] --> Source[Codex source adapter]
+    Source --> Session[model.Session]
+    Session --> Analyzer[Analyzer]
+    Analyzer --> Analysis[Analysis result]
+    Session --> Projector[ObservationsFromSession]
+    Projector --> Observations[Session and turn observations]
 ```
 
-from a provider usage record.
+### TokDoctor Gateway
 
-### high
+The gateway records request metadata to a local append-only capture, then a producer projects a request-scope observation.
 
-Derived deterministically from reliable local data.
-
-Example:
-
-```text
-tool output size
-known event relationship
-repeated call count
+```mermaid
+flowchart TD
+    Traffic[Gateway traffic] --> Capture[Local capture JSONL]
+    Capture --> Producer[ObservationFromExchange]
+    Producer --> Observation[Request-scope gateway observation]
 ```
 
-### medium
+### 9Router
 
-A useful inference with meaningful uncertainty.
+Current code detects and probes the 9Router endpoint only. It does not produce a canonical session, telemetry, or an observation. Any future output depends on verified 9Router capabilities and must not be assumed. Do not claim that 9Router always produces `model.Session`.
 
-### low
+## Correlation: Produce, Match, Reconcile
 
-A heuristic or semantic estimate.
+Correlation is not merely a future idea. Observation identity and reconciliation are active architecture work.
 
-Provider-reported usage always takes precedence over local token estimation.
-
-TokDoctor must never present estimated attribution as exact provider usage.
-
-## Data Flow Example
-
-A Codex analysis may look like:
-
-```text
-~/.codex/sessions/.../rollout.jsonl
-                |
-                v
-          Codex Source
-                |
-        parse + normalize
-                |
-                v
-          model.Session
-                |
-                v
-            Analyzer
-                |
-     +----------+----------+
-     |          |          |
-     v          v          v
- TOOL001     MCP001      CTX001
-     |          |          |
-     +----------+----------+
-                |
-                v
-        AnalysisResult
-                |
-        +-------+-------+
-        |       |       |
-        v       v       v
-      CLI      JSON     UI
+```mermaid
+flowchart LR
+    Produce[Produce observations] --> Match[Match by identity]
+    Match --> Reconcile[Reconcile usage]
 ```
 
-A 9Router analysis follows the same core path:
+Required invariants:
 
-```text
-9Router data
-     |
-     v
-9Router Source
-     |
-     v
-model.Session
-     |
-     v
-same Analyzer
-     |
-     v
-same Rules
-```
-
-The difference belongs only at the source boundary.
-
-## Correlating Multiple Sources
-
-Some environments may provide complementary data.
-
-Example:
-
-```text
-Codex local session
-        |
-        +---- agent execution events
-        |
-        v
-     Correlation
-        ^
-        |
-9Router usage records
-        |
-        +---- downstream provider usage
-```
-
-This may allow TokDoctor to connect:
-
-```text
-large tool output
-        |
-        v
-subsequent request token growth
-```
-
-When cross-source correlation is added, it should produce stronger evidence without coupling generic rules to one platform combination.
-
-Correlation is not required for the initial MVP.
+- an observation ID is not a correlation identity
+- identity fields are never copied between namespaces
+- explicit identity is stronger than temporal proximity
+- a request-scope observation is never compared directly to a session-scope aggregate
+- an unmatched observation is still valid
+- a missing channel is reported through coverage, not invented
+- observations with dependent lineage are not independent cross-confirmation
 
 ## Streaming and Large Files
 
-AI-agent session files may become very large.
-
-Source adapters should stream JSONL and similar formats whenever practical.
-
-Preferred pattern:
-
-```text
-file
- |
- v
-buffered reader
- |
- v
-record parser
- |
- v
-normalizer
-```
-
-Avoid reading an entire session into memory by default.
-
-Performance optimizations should be driven by profiling and measurements.
+Session files may become very large. Source adapters should stream JSONL and similar formats whenever practical, using a buffered reader and a record parser over the file. Avoid loading whole files into memory unless the format requires it or the size is known to be safe. Optimize only after measurement.
 
 ## Storage
 
-### MVP
+No database is required for current analysis.
 
-No database is required for basic analysis.
+`Current`: the gateway maintains a local append-only capture as JSONL. The capture stores normalized request metadata and content hashes rather than raw request or response bodies.
 
-Flow:
-
-```text
-source
-  |
-  v
-stream
-  |
-  v
-analyze
-  |
-  v
-report
+```mermaid
+flowchart LR
+    Traffic[Gateway traffic] --> Capture[Local capture JSONL]
+    Capture --> Producer[Gateway observation producer]
+    Producer --> Catalog[Observation catalog - planned]
 ```
 
-### Future
+Storage rules:
 
-SQLite may be introduced when features require persistent history, such as:
+- capture storage is not the canonical model
+- the matcher and reconciler do not read raw capture directly; they consume canonical observations
+- agent session files remain read-only during analysis
+- purging capture is an explicit user action (`tok gateway remove --purge`)
+- nothing is uploaded: no prompts, source code, responses, or session history
 
-```text
-tok history
-tok compare
-regression detection
-before/after verification
-trend analysis
-```
-
-Storage should remain local by default.
-
-The analysis engine must not depend directly on SQLite.
-
-## External Adapter Protocol
-
-Built-in adapters may be implemented in Go.
-
-Future community adapters should not require contributors to use Go.
-
-A future external adapter protocol may use NDJSON over stdin/stdout:
-
-```text
-tokdoctor-adapter-example
-          |
-          v
-Normalized NDJSON events
-          |
-          v
-TokDoctor
-```
-
-This allows adapters to be implemented in:
-
-```text
-Go
-Rust
-Python
-TypeScript
-other languages
-```
-
-External adapters are a future extension point and should not complicate the initial MVP.
+`Future`: a local database (for example SQLite) may be introduced for history, comparison, regression detection, or before/after verification. Analysis, matching, and reconciliation must not depend on it.
 
 ## Security Boundaries
 
-TokDoctor processes potentially sensitive local data.
+By default TokDoctor must:
 
-Architecture must preserve these guarantees by default:
+- operate locally
+- require no account and no cloud service
+- avoid uploading prompts, source code, tool output, or session history
+- avoid telemetry unless explicitly enabled
+- bind the Web UI and gateway to loopback only
+- never modify original agent session data during analysis
+- never log secrets, credentials, API keys, or tokens
 
-```text
-no account
-no cloud dependency
-no prompt upload
-no source-code upload
-no session upload
-no telemetry without consent
-read-only source analysis
-loopback-only Web UI
-```
-
-Security-sensitive features should be reviewed against `SECURITY.md`.
+Security-sensitive changes should be reviewed against [`SECURITY.md`](../SECURITY.md).
 
 ## Testing Strategy
 
-Architecture boundaries should be protected by tests.
+Architecture boundaries are protected by tests. This section states the strategy and invariants, not a full test specification.
 
-### Source Adapter Tests
+### Source adapter tests (Current)
 
-Use sanitized fixtures:
+Fixture-based tests cover detection, session discovery, parsing, normalization, unknown events, malformed required records, and relevant edge cases. Fixtures must be synthetic or sanitized.
+
+### Producer tests (Planned to extend)
+
+Producer tests should cover:
+
+- valid projection
+- missing versus explicit zero
+- identity namespace separation
+- outcome and completeness
+- deterministic behavior
+- privacy (no raw payloads)
+- duplicate and conflict behavior
+- malformed or truncated input
+
+### Matcher tests (Planned)
+
+Matcher tests should cover:
+
+- exact identity
+- conflicting identity
+- ambiguous match
+- weak temporal match
+- unmatched observation
+- incompatible scopes
+
+### Reconciler tests (Planned)
+
+Reconciler tests should cover:
+
+- 3/3, 2/3, and 1/3 channel coverage
+- measured versus derived or estimated
+- missing versus explicit zero
+- field deltas
+- dependent lineage
+- incompatible scopes
+
+### Rule and integration tests (Current)
+
+Each rule has a positive case, a negative case, and edge cases. Integration tests cover source, normalize, analyze, and findings. Stable terminal output may use golden tests. Avoid excessive mocking.
+
+## Package Structure
+
+Current organization:
 
 ```text
-fixture
-  |
-  v
-parser
-  |
-  v
-normalizer
-  |
-  v
-canonical model
+tokdoctor/
+├── cmd/tok/main.go
+├── internal/
+│   ├── analyze/
+│   ├── app/
+│   ├── cli/
+│   ├── config/
+│   ├── gateway/
+│   ├── model/
+│   ├── pricing/
+│   ├── report/
+│   │   ├── cost/
+│   │   ├── inspect/
+│   │   ├── json/
+│   │   ├── pricing/
+│   │   ├── sessions/
+│   │   ├── source/
+│   │   ├── terminal/
+│   │   └── usage/
+│   ├── source/
+│   │   ├── catalog/
+│   │   ├── claude/
+│   │   ├── codex/
+│   │   └── router9/
+│   └── webui/
+├── ui/
+├── fixtures/
+└── docs/
 ```
 
-### Rule Tests
+Catalog, matcher, and reconciler logic will live in dedicated packages close to the domain when implemented. Matcher and reconciler logic must not live in `internal/model`. Do not create packages purely to match a diagram; a package should own meaningful behavior.
 
-Each rule should include:
+## Go Design Principles
+
+- Standard library first.
+- Small interfaces, defined near their consumer. Introduce an interface only for a real boundary or multiple implementations.
+- Concrete types by default. No service/implementation pairs, no DI containers, no factories for trivial construction.
+- Explicit dependency injection through constructors and wiring.
+- Clear package ownership. Avoid generic packages such as `utils`, `common`, `helpers`, `base`, or `impl`.
+- Errors carry context and support `errors.Is` and `errors.As`.
+- Comments explain non-obvious intent, constraints, or protocol quirks, not obvious code.
+- Use `context.Context` only for cancellation, deadlines, and request lifecycle.
+
+## CLI and Web UI
+
+TokDoctor is CLI-first. Current commands include:
+
+```bash
+tok doctor
+tok doctor --ui
+tok ui
+tok usage
+tok sessions
+tok inspect <session-id>
+tok cost
+tok pricing
+tok sources
+tok gateway start
+tok gateway requests --profile <name>
+tok gateway inspect --profile <name> <exchange-id>
+tok gateway chains --profile <name>
+tok gateway report --profile <name>
+```
+
+`tok gateway requests` and `tok gateway inspect` are transitional surfaces. They are not declared deprecated and have no scheduled removal.
+
+### Planned inspect direction
+
+`inspect` should become the unified entry point for session analysis and observation reconciliation.
+
+Interactive direction:
 
 ```text
-positive case
-negative case
-edge cases
+select session
+  -> select turn
+  -> select request
+  -> inspect observations and reconciliation
 ```
 
-### Integration Tests
+Non-interactive direction for automation:
 
-Important paths should test:
-
-```text
-fixture
-  |
-  v
-source
-  |
-  v
-normalize
-  |
-  v
-analyze
-  |
-  v
-finding
+```bash
+tok inspect --session <id>
+tok inspect --session <id> --turn <id>
+tok inspect --request <id>
+tok inspect --format json
 ```
 
-### Presentation Tests
+This is a `Planned` direction. Current `tok inspect` accepts a positional session ID only and does not support `--session`, `--turn`, `--request`, or observation reconciliation.
 
-Stable terminal output may use golden tests.
+### Web UI
 
-Avoid excessive mocking.
+The Web UI is an optional local presentation layer built on the same core result as the terminal and JSON output. It must not duplicate analysis logic. The UI may be embedded into the Go binary with `//go:embed` to preserve single-binary distribution.
 
-## Architectural Decision Rules
+## Initial Vertical Slice
 
-When making a design decision, prefer the option that:
-
-1. keeps platform details isolated
-2. reduces dependencies
-3. keeps local execution simple
-4. remains understandable to contributors
-5. preserves single-binary distribution
-6. supports streaming
-7. avoids speculative abstraction
-8. produces testable behavior
-
-If two designs solve the same problem, prefer the simpler one.
-
-## MVP Architecture Scope
-
-The first vertical slice should remain intentionally small:
+The first vertical slice (`Completed`) was intentionally small:
 
 ```text
 Codex session discovery
@@ -918,19 +553,39 @@ run first deterministic rule
 render terminal report
 ```
 
-Do not build all adapters, persistent storage, auto-fix, cloud features, or historical comparison before the core analysis proves useful.
+This history is kept for context.
+
+## Current Architecture Scope
+
+`Current`:
+
+- gateway request capture and gateway observation producer
+- Codex session transcript observation producer
+- canonical session model, analyzer, and presentation layers
+- per-turn context attribution and context reconciliation for Claude sessions (distinct from the planned observation reconciler)
+
+`Planned`:
+
+- observation catalog
+- matcher
+- reconciler
+- session transcript producers for Claude
+- agent telemetry producers
+- unified inspect spanning analysis, observations, and reconciliation
+
+Do not build all adapters, persistent storage, auto-fix, cloud features, or historical comparison before the core proves useful.
 
 ## Architecture Invariants
 
-The following rules should remain true as TokDoctor grows:
-
 1. Core analysis is platform-independent.
-2. Source adapters own platform-specific parsing.
-3. Presentation does not contain analysis logic.
-4. Rules consume normalized data.
-5. Provider measurements and estimates remain distinguishable.
-6. Local-first is the default.
-7. Source data is read-only during analysis.
-8. Interfaces stay small and purposeful.
-9. Dependencies remain minimal.
-10. Simple code is preferred over architectural ceremony.
+2. Source adapters and producers own platform-specific parsing and projection.
+3. Presentation contains no analysis, matching, or reconciliation logic.
+4. Rules consume canonical session data only.
+5. Provider measurements, derived values, counted values, and estimates remain distinguishable.
+6. Missing values are never converted to zero, and unknown is never converted to measured.
+7. Local-first is the default.
+8. Source data is read-only during analysis.
+9. Capture storage is not the canonical model.
+10. An observation ID is not a correlation identity.
+11. Interfaces stay small and purposeful.
+12. Dependencies remain minimal, and simple code is preferred over architectural ceremony.
