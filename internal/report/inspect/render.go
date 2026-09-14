@@ -10,13 +10,19 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/thanhpham0406/tok-doctor/internal/app"
+	"github.com/thanhpham0406/tok-doctor/internal/match"
 	"github.com/thanhpham0406/tok-doctor/internal/model"
+	"github.com/thanhpham0406/tok-doctor/internal/reconcile"
 	reportusage "github.com/thanhpham0406/tok-doctor/internal/report/usage"
 )
 
 const (
 	defaultTopLimit    = 5
 	defaultRecentLimit = 5
+
+	reconciliationSeparator = "────────────────────────────────────────"
+	missingValue            = "—"
 )
 
 type Options struct {
@@ -28,7 +34,15 @@ type Options struct {
 }
 
 func Render(w io.Writer, session model.Session, opts Options) error {
+	return RenderResult(w, app.InspectResult{Session: session}, opts)
+}
+
+func RenderResult(w io.Writer, result app.InspectResult, opts Options) error {
+	session := result.Session
 	if err := renderSummary(w, session, opts.ShowEvidence); err != nil {
+		return err
+	}
+	if err := renderReconciliation(w, result); err != nil {
 		return err
 	}
 	if err := renderReconciliationHint(w, session); err != nil {
@@ -36,12 +50,174 @@ func Render(w io.Writer, session model.Session, opts Options) error {
 	}
 
 	if opts.Turn > 0 {
-		return renderSingleTurn(w, session, opts.Turn, opts)
+		return renderSingleTurn(w, session, opts.Turn, opts, result)
 	}
 	if opts.AllTurns {
 		return renderAllTurns(w, session)
 	}
 	return renderTopAndRecent(w, session)
+}
+
+func renderReconciliation(w io.Writer, result app.InspectResult) error {
+	if result.Reconciliation == nil && result.UnavailableReason == "" {
+		return nil
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Reconciliation"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, reconciliationSeparator); err != nil {
+		return err
+	}
+	if result.Reconciliation == nil {
+		_, err := fmt.Fprintf(w, "Unavailable: %s\n", result.UnavailableReason)
+		return err
+	}
+	summary := result.Reconciliation.Summary
+	rows := []struct {
+		label string
+		value int
+	}{
+		{"Gateway requests", summary.GatewayRequests},
+		{"Transcript turns", summary.TranscriptTurns},
+		{"Matched", summary.Matched},
+		{"Equal", summary.Equal},
+		{"Different", summary.Different},
+		{"Unavailable", summary.Unavailable},
+		{"Ambiguous", summary.AmbiguousGateways},
+		{"Unmatched gateway", summary.UnmatchedGateways},
+		{"Unmatched transcript", summary.UnmatchedTranscripts},
+	}
+	for _, row := range rows {
+		if _, err := fmt.Fprintf(w, "%-22s %d\n", row.label, row.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renderTurnReconciliation(w io.Writer, reconciliation app.TurnReconciliation) error {
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Gateway match"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, reconciliationSeparator); err != nil {
+		return err
+	}
+	switch reconciliation.Status {
+	case match.StatusMatched:
+		if reconciliation.Result == nil {
+			_, err := fmt.Fprintln(w, "Status         unavailable")
+			return err
+		}
+		return renderGatewayMatch(w, *reconciliation.Result)
+	case match.StatusAmbiguous:
+		_, err := fmt.Fprintln(w, "Status         ambiguous")
+		return err
+	default:
+		_, err := fmt.Fprintln(w, "Status         unmatched")
+		return err
+	}
+}
+
+func renderGatewayMatch(w io.Writer, result reconcile.Result) error {
+	if _, err := fmt.Fprintf(w, "Confidence     %s\n", orDash(string(result.Confidence))); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Reasons        %s\n", orDash(formatReasons(result.Reasons))); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Gateway        %s\n", orDash(result.GatewayObservationID)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Status         %s\n", orDash(string(result.Status))); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Token comparison"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, reconciliationSeparator); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%-22s %10s %7s %7s   %s\n", "Field", "Gateway", "Agent", "Delta", "Status"); err != nil {
+		return err
+	}
+	for _, field := range result.Fields {
+		if _, err := fmt.Fprintf(w, "%-22s %10s %7s %7s   %s\n",
+			comparisonFieldLabel(field.Field),
+			formatComparisonValue(field.Left),
+			formatComparisonValue(field.Right),
+			formatComparisonDelta(field.Delta),
+			orDash(string(field.Status)),
+		); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "Delta:"); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(w, "transcript - gateway")
+	return err
+}
+
+func formatComparisonValue(measurement model.Measurement) string {
+	if !measurement.Available() {
+		return missingValue
+	}
+	return reportusage.FormatTokenCount(measurement)
+}
+
+func formatComparisonDelta(delta *int64) string {
+	if delta == nil {
+		return missingValue
+	}
+	formatted := reportusage.FormatTokenCount(model.NewMeasurement(*delta, model.MeasurementMeasured))
+	if *delta > 0 {
+		return "+" + formatted
+	}
+	return formatted
+}
+
+func formatReasons(reasons []match.Reason) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	parts := make([]string, len(reasons))
+	for i, reason := range reasons {
+		parts[i] = string(reason)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func comparisonFieldLabel(field string) string {
+	switch field {
+	case "freshInput":
+		return "Fresh input"
+	case "cachedInput":
+		return "Cached input"
+	case "cacheCreationInput":
+		return "Cache creation"
+	case "totalInput":
+		return "Total input"
+	case "output":
+		return "Output"
+	case "reasoningOutput":
+		return "Reasoning"
+	case "total":
+		return "Total"
+	default:
+		return field
+	}
 }
 
 func renderSummary(w io.Writer, session model.Session, showEvidence bool) error {
@@ -182,7 +358,7 @@ func renderAllTurns(w io.Writer, session model.Session) error {
 	return renderTurnTable(w, session.Turns, mixed(session.Turns))
 }
 
-func renderSingleTurn(w io.Writer, session model.Session, sequence int, opts Options) error {
+func renderSingleTurn(w io.Writer, session model.Session, sequence int, opts Options, result app.InspectResult) error {
 	if len(session.Turns) == 0 {
 		_, err := fmt.Fprintf(w, "Turn %d not found in session %s (session has no reconstructable turns).\n", sequence, session.ID)
 		return err
@@ -242,6 +418,12 @@ func renderSingleTurn(w io.Writer, session model.Session, sequence int, opts Opt
 	}
 	if err := renderUsageMetric(w, "Total", match.Usage.Total); err != nil {
 		return err
+	}
+
+	if reconciliation, ok := result.TurnReconciliations[match.ID]; ok {
+		if err := renderTurnReconciliation(w, reconciliation); err != nil {
+			return err
+		}
 	}
 
 	if opts.ShowContext {
@@ -681,30 +863,205 @@ func orDash(s string) string {
 }
 
 type InspectResult struct {
-	Session model.Session `json:"session"`
-	Turn    *model.Turn   `json:"turn,omitempty"`
+	Session        model.Session      `json:"session"`
+	Turn           *model.Turn        `json:"turn,omitempty"`
+	Reconciliation reconciliationJSON `json:"reconciliation"`
+}
+
+type reconciliationJSON struct {
+	available       bool
+	reason          string
+	summary         *reconciliationSummaryJSON
+	matches         []matchJSON
+	reconciliations []reconciliationResultJSON
+}
+
+func (r reconciliationJSON) MarshalJSON() ([]byte, error) {
+	if !r.available {
+		return json.Marshal(struct {
+			Available bool   `json:"available"`
+			Reason    string `json:"reason,omitempty"`
+		}{Available: false, Reason: r.reason})
+	}
+	return json.Marshal(struct {
+		Available       bool                       `json:"available"`
+		Summary         *reconciliationSummaryJSON `json:"summary"`
+		Matches         []matchJSON                `json:"matches"`
+		Reconciliations []reconciliationResultJSON `json:"reconciliations"`
+	}{
+		Available:       true,
+		Summary:         r.summary,
+		Matches:         nonNilMatches(r.matches),
+		Reconciliations: nonNilReconciliations(r.reconciliations),
+	})
+}
+
+type reconciliationSummaryJSON struct {
+	GatewayRequests      int `json:"gatewayRequests"`
+	TranscriptTurns      int `json:"transcriptTurns"`
+	Matched              int `json:"matched"`
+	Equal                int `json:"equal"`
+	Different            int `json:"different"`
+	Unavailable          int `json:"unavailable"`
+	AmbiguousGateways    int `json:"ambiguousGateways"`
+	UnmatchedGateways    int `json:"unmatchedGateways"`
+	UnmatchedTranscripts int `json:"unmatchedTranscripts"`
+}
+
+type matchJSON struct {
+	ID                      string   `json:"id"`
+	GatewayObservationID    string   `json:"gatewayObservationId,omitempty"`
+	TranscriptObservationID string   `json:"transcriptObservationId,omitempty"`
+	Status                  string   `json:"status"`
+	Confidence              string   `json:"confidence,omitempty"`
+	Reasons                 []string `json:"reasons,omitempty"`
+	Side                    string   `json:"side,omitempty"`
+	CandidateTranscriptIDs  []string `json:"candidateTranscriptIds,omitempty"`
+}
+
+type reconciliationResultJSON struct {
+	GatewayObservationID    string                `json:"gatewayObservationId"`
+	TranscriptObservationID string                `json:"transcriptObservationId"`
+	Confidence              string                `json:"confidence,omitempty"`
+	Reasons                 []string              `json:"reasons,omitempty"`
+	Status                  string                `json:"status"`
+	Fields                  []fieldComparisonJSON `json:"fields"`
+}
+
+type fieldComparisonJSON struct {
+	Field   string            `json:"field"`
+	Gateway model.Measurement `json:"gateway"`
+	Agent   model.Measurement `json:"agent"`
+	Delta   *int64            `json:"delta,omitempty"`
+	Status  string            `json:"status"`
+}
+
+func reconciliationJSONFrom(result app.InspectResult) reconciliationJSON {
+	if result.Reconciliation == nil {
+		return reconciliationJSON{available: false, reason: result.UnavailableReason}
+	}
+	report := result.Reconciliation
+	return reconciliationJSON{
+		available:       true,
+		summary:         summaryJSONFrom(report.Summary),
+		matches:         matchesJSONFrom(report.Matches),
+		reconciliations: reconciliationsJSONFrom(report.Reconciliations),
+	}
+}
+
+func summaryJSONFrom(summary reconcile.Summary) *reconciliationSummaryJSON {
+	return &reconciliationSummaryJSON{
+		GatewayRequests:      summary.GatewayRequests,
+		TranscriptTurns:      summary.TranscriptTurns,
+		Matched:              summary.Matched,
+		Equal:                summary.Equal,
+		Different:            summary.Different,
+		Unavailable:          summary.Unavailable,
+		AmbiguousGateways:    summary.AmbiguousGateways,
+		UnmatchedGateways:    summary.UnmatchedGateways,
+		UnmatchedTranscripts: summary.UnmatchedTranscripts,
+	}
+}
+
+func matchesJSONFrom(matches []match.ObservationMatch) []matchJSON {
+	encoded := make([]matchJSON, 0, len(matches))
+	for _, observationMatch := range matches {
+		encoded = append(encoded, matchJSON{
+			ID:                      observationMatch.ID,
+			GatewayObservationID:    observationMatch.GatewayObservationID,
+			TranscriptObservationID: observationMatch.TranscriptObservationID,
+			Status:                  string(observationMatch.Status),
+			Confidence:              string(observationMatch.Confidence),
+			Reasons:                 reasonsJSON(observationMatch.Reasons),
+			Side:                    string(observationMatch.Side),
+			CandidateTranscriptIDs:  observationMatch.CandidateTranscriptIDs,
+		})
+	}
+	return encoded
+}
+
+func reconciliationsJSONFrom(results []reconcile.Result) []reconciliationResultJSON {
+	encoded := make([]reconciliationResultJSON, 0, len(results))
+	for _, result := range results {
+		encoded = append(encoded, reconciliationResultJSON{
+			GatewayObservationID:    result.GatewayObservationID,
+			TranscriptObservationID: result.TranscriptObservationID,
+			Confidence:              string(result.Confidence),
+			Reasons:                 reasonsJSON(result.Reasons),
+			Status:                  string(result.Status),
+			Fields:                  fieldsJSON(result.Fields),
+		})
+	}
+	return encoded
+}
+
+func fieldsJSON(fields []reconcile.FieldComparison) []fieldComparisonJSON {
+	encoded := make([]fieldComparisonJSON, 0, len(fields))
+	for _, field := range fields {
+		encoded = append(encoded, fieldComparisonJSON{
+			Field:   field.Field,
+			Gateway: field.Left,
+			Agent:   field.Right,
+			Delta:   field.Delta,
+			Status:  string(field.Status),
+		})
+	}
+	return encoded
+}
+
+func reasonsJSON(reasons []match.Reason) []string {
+	if len(reasons) == 0 {
+		return nil
+	}
+	encoded := make([]string, len(reasons))
+	for i, reason := range reasons {
+		encoded[i] = string(reason)
+	}
+	return encoded
+}
+
+func nonNilMatches(matches []matchJSON) []matchJSON {
+	if matches == nil {
+		return []matchJSON{}
+	}
+	return matches
+}
+
+func nonNilReconciliations(results []reconciliationResultJSON) []reconciliationResultJSON {
+	if results == nil {
+		return []reconciliationResultJSON{}
+	}
+	return results
 }
 
 func RenderJSON(w io.Writer, session model.Session) error {
-	return RenderJSONWithOptions(w, session, Options{})
+	return RenderJSONResult(w, app.InspectResult{Session: session}, Options{})
 }
 
 func RenderJSONWithOptions(w io.Writer, session model.Session, opts Options) error {
-	result := InspectResult{Session: session}
+	return RenderJSONResult(w, app.InspectResult{Session: session}, opts)
+}
+
+func RenderJSONResult(w io.Writer, result app.InspectResult, opts Options) error {
+	session := result.Session
+	encoded := InspectResult{
+		Session:        session,
+		Reconciliation: reconciliationJSONFrom(result),
+	}
 	if opts.Turn > 0 && opts.ShowContext {
-		result.Session.Turns = nil
+		encoded.Session.Turns = nil
 		for i := range session.Turns {
 			if session.Turns[i].Sequence == opts.Turn {
 				turn := session.Turns[i]
 				turn.ContextAttribution.Reconciliation = model.ReconcileContext(turn)
-				result.Turn = &turn
+				encoded.Turn = &turn
 				break
 			}
 		}
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(result)
+	return enc.Encode(encoded)
 }
 
 func renderSessionEvidence(session model.Session) string {

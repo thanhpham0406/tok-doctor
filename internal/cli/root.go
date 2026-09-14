@@ -831,13 +831,13 @@ func newInspectCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 			if contextAll {
 				context = true
 			}
-			session, err := tok.Inspect(ctx, args[0])
+			result, err := tok.InspectReport(ctx, args[0])
 			if err != nil {
 				return err
 			}
 			switch format {
 			case "terminal":
-				return reportinspect.Render(stdout, session, reportinspect.Options{
+				return reportinspect.RenderResult(stdout, result, reportinspect.Options{
 					AllTurns:     allTurns,
 					Turn:         turn,
 					ShowEvidence: evidence,
@@ -845,7 +845,7 @@ func newInspectCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 					ContextAll:   contextAll,
 				})
 			case "json":
-				return reportinspect.RenderJSONWithOptions(stdout, session, reportinspect.Options{
+				return reportinspect.RenderJSONResult(stdout, result, reportinspect.Options{
 					AllTurns:     allTurns,
 					Turn:         turn,
 					ShowEvidence: evidence,

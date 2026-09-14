@@ -226,6 +226,23 @@ func (r *FileRecorder) Summary(profile string) (Summary, error) {
 	}, nil
 }
 
+func (r *FileRecorder) CaptureExists(profile string) (bool, error) {
+	if r == nil {
+		return false, nil
+	}
+	if err := ValidateCaptureProfile(profile); err != nil {
+		return false, err
+	}
+	_, err := os.Stat(r.pathFor(profile))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("stat gateway capture %s: %w", profile, err)
+}
+
 func countJSONLLines(path string) int64 {
 	file, err := os.Open(path)
 	if err != nil {
