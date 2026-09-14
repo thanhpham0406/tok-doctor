@@ -148,13 +148,7 @@ func TestReadSessionsAggregateReconcilesWithUsage(t *testing.T) {
 
 	var snaps []UsageSnapshot
 	for _, session := range sessions {
-		snaps = append(snaps, UsageSnapshot{
-			Input:    session.Usage.Input.ValueOrZero(),
-			Cached:   session.Usage.Cached.ValueOrZero(),
-			Output:   session.Usage.Output.ValueOrZero(),
-			Total:    session.Usage.Total.ValueOrZero(),
-			HasUsage: session.Usage.HasUsage(),
-		})
+		snaps = append(snaps, snapshotFromModelUsage(session.Usage))
 	}
 	reconciled := SumSnapshots(snaps)
 	if reconciled.Input.ValueOrZero() != usage.Input.ValueOrZero() || reconciled.Cached.ValueOrZero() != usage.Cached.ValueOrZero() ||
@@ -210,15 +204,18 @@ func TestReadSessionsDoesNotExposeSyntheticModel(t *testing.T) {
 	}
 }
 
-func TestReadSessionsSkipsAllZeroUsage(t *testing.T) {
+func TestReadSessionsKeepsAllZeroUsage(t *testing.T) {
 	withFixtureHome(t, "explicit-zero-usage-session.jsonl")
 
 	sessions, err := New().ReadSessions(context.Background())
 	if err != nil {
 		t.Fatalf("ReadSessions: %v", err)
 	}
-	if len(sessions) != 0 {
-		t.Fatalf("sessions = %+v, want none for all-zero usage", sessions)
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %+v, want one explicit-zero session", sessions)
+	}
+	if !sessions[0].Usage.Input.Available() || sessions[0].Usage.Input.ValueOrZero() != 0 {
+		t.Fatalf("input = %+v, want explicit measured/derived zero", sessions[0].Usage.Input)
 	}
 }
 
@@ -291,7 +288,7 @@ func TestReadSessionsKeepsInputOnly(t *testing.T) {
 	}
 }
 
-func TestUsageAggregateSkipsAllZeroSessions(t *testing.T) {
+func TestUsageAggregateIncludesZeroWithPositiveSessions(t *testing.T) {
 	withFixtureHome(t, "basic-session.jsonl", "explicit-zero-usage-session.jsonl")
 
 	src := New()
@@ -304,7 +301,37 @@ func TestUsageAggregateSkipsAllZeroSessions(t *testing.T) {
 		t.Fatalf("Usage: %v", err)
 	}
 	if usage.Input.ValueOrZero() != 720 || usage.Output.ValueOrZero() != 200 {
-		t.Fatalf("usage = %+v, want basic-session totals only (all-zero skipped)", usage)
+		t.Fatalf("usage = %+v, want basic-session totals", usage)
+	}
+	if usage.Input.Value == nil || usage.Output.Value == nil {
+		t.Fatalf("usage = %+v, want authoritative totals present", usage)
+	}
+}
+
+func TestSourceUsageKeepsExplicitZeroPresence(t *testing.T) {
+	withFixtureHome(t, "explicit-zero-usage-session.jsonl")
+
+	src := New()
+	refs, err := src.Sessions(context.Background())
+	if err != nil {
+		t.Fatalf("Sessions: %v", err)
+	}
+	usage, err := src.Usage(context.Background(), refs)
+	if err != nil {
+		t.Fatalf("Usage: %v", err)
+	}
+	if !usage.HasUsage() {
+		t.Fatalf("usage = %+v, want explicit-zero presence preserved", usage)
+	}
+	for name, metric := range map[string]model.Measurement{
+		"input":  usage.Input,
+		"cached": usage.Cached,
+		"output": usage.Output,
+		"total":  usage.Total,
+	} {
+		if !metric.Available() || metric.ValueOrZero() != 0 {
+			t.Fatalf("%s = %+v, want explicit non-nil zero", name, metric)
+		}
 	}
 }
 
@@ -461,7 +488,7 @@ func TestReadSessionsTurnsCarrySourceValueEvidence(t *testing.T) {
 		if turn.Usage.Input.Kind != model.MeasurementMeasured {
 			t.Fatalf("turn %s input kind = %q, want measured", turn.ID, turn.Usage.Input.Kind)
 		}
-		for _, metric := range []model.Measurement{turn.Usage.Input, turn.Usage.Output, turn.Usage.Total} {
+		for _, metric := range directTurnMeasurements(turn.Usage) {
 			if len(metric.Evidence) == 0 {
 				t.Fatalf("turn %s metric missing evidence", turn.ID)
 			}
@@ -479,6 +506,11 @@ func TestReadSessionsTurnsCarrySourceValueEvidence(t *testing.T) {
 				t.Fatalf("turn %s evidence inconsistent with measurement kind %q", turn.ID, metric.Kind)
 			}
 		}
+		for _, derived := range []model.Measurement{turn.Usage.Cached, turn.Usage.Total} {
+			if len(derived.Evidence) == 0 || derived.Evidence[0].Kind != model.EvidenceAggregate {
+				t.Fatalf("turn %s derived evidence = %+v, want aggregate", turn.ID, derived.Evidence)
+			}
+		}
 	}
 }
 
@@ -491,7 +523,7 @@ func TestReadSessionsDedupeRegressionEvidenceLineage(t *testing.T) {
 	}
 	seen := map[string]int{}
 	for _, turn := range sessions[0].Turns {
-		for _, metric := range []model.Measurement{turn.Usage.Input, turn.Usage.Output, turn.Usage.Total} {
+		for _, metric := range directTurnMeasurements(turn.Usage) {
 			for _, ev := range metric.Evidence {
 				if ev.Kind == model.EvidenceSourceValue {
 					seen[ev.Record]++
@@ -503,10 +535,18 @@ func TestReadSessionsDedupeRegressionEvidenceLineage(t *testing.T) {
 		t.Fatalf("distinct records = %d, want 2 (one per unique message id)", len(seen))
 	}
 	for id, count := range seen {
-		if count != 3 {
-			t.Fatalf("record %s appeared on %d metrics, want 3 (one per metric)", id, count)
+		if count != 4 {
+			t.Fatalf("record %s appeared on %d metrics, want 4 (one per direct field)", id, count)
 		}
 	}
+}
+
+func directTurnMeasurements(usage model.Usage) []model.Measurement {
+	metrics := []model.Measurement{usage.Input, usage.Output}
+	if usage.Billable != nil {
+		metrics = append(metrics, usage.Billable.CacheRead, usage.Billable.CacheWrite)
+	}
+	return metrics
 }
 
 func TestReadSessionsSessionEvidenceIsAggregate(t *testing.T) {
@@ -587,7 +627,94 @@ func TestReadSessionsExplicitZeroRetainsEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSessions: %v", err)
 	}
-	if len(sessions) != 0 {
-		t.Skip("explicit-zero sessions are filtered out at the source level by HasPositiveUsage; explicit zero retention is exercised for Codex where the snapshot is preserved")
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1 explicit-zero session", len(sessions))
 	}
+	session := sessions[0]
+	if len(session.Turns) != 1 {
+		t.Fatalf("turns = %d, want 1", len(session.Turns))
+	}
+	turn := session.Turns[0]
+
+	for name, metric := range map[string]model.Measurement{
+		"input":  turn.Usage.Input,
+		"output": turn.Usage.Output,
+	} {
+		if metric.Value == nil || *metric.Value != 0 {
+			t.Fatalf("turn %s = %+v, want explicit zero value", name, metric)
+		}
+		if metric.Kind != model.MeasurementMeasured {
+			t.Fatalf("turn %s kind = %q, want measured", name, metric.Kind)
+		}
+		if len(metric.Evidence) != 1 || metric.Evidence[0].Kind != model.EvidenceSourceValue {
+			t.Fatalf("turn %s evidence = %+v, want source_value", name, metric.Evidence)
+		}
+	}
+	if turn.Usage.Cached.Value == nil || turn.Usage.Cached.Kind != model.MeasurementDerived {
+		t.Fatalf("turn cached = %+v, want derived zero", turn.Usage.Cached)
+	}
+	if turn.Usage.Total.Value == nil || turn.Usage.Total.Kind != model.MeasurementDerived {
+		t.Fatalf("turn total = %+v, want derived zero", turn.Usage.Total)
+	}
+	if turn.Usage.Billable == nil || !turn.Usage.Billable.CacheRead.Available() || !turn.Usage.Billable.CacheWrite.Available() {
+		t.Fatalf("turn billable = %+v, want cache read/write zeros", turn.Usage.Billable)
+	}
+
+	observations, err := ObservationsFromSession(session)
+	if err != nil {
+		t.Fatalf("ObservationsFromSession: %v", err)
+	}
+	if len(observations) != 2 {
+		t.Fatalf("observations = %d, want session plus turn", len(observations))
+	}
+	for i, observation := range observations {
+		if err := observation.Validate(); err != nil {
+			t.Fatalf("observation[%d] invalid: %v", i, err)
+		}
+		if observation.Completeness != model.ObservationCompletenessComplete {
+			t.Fatalf("observation[%d] completeness = %q, want complete", i, observation.Completeness)
+		}
+		if observation.Outcome != model.ObservationOutcomeUnknown {
+			t.Fatalf("observation[%d] outcome = %q, want unknown", i, observation.Outcome)
+		}
+	}
+	for name, metric := range map[string]model.Measurement{
+		"freshInput":         observations[1].Usage.FreshInput,
+		"cachedInput":        observations[1].Usage.CachedInput,
+		"cacheCreationInput": observations[1].Usage.CacheCreationInput,
+		"totalInput":         observations[1].Usage.TotalInput,
+		"output":             observations[1].Usage.Output,
+		"total":              observations[1].Usage.Total,
+	} {
+		if metric.Value == nil || *metric.Value != 0 {
+			t.Fatalf("turn observation %s = %+v, want explicit zero value", name, metric)
+		}
+	}
+}
+
+func snapshotFromModelUsage(usage model.Usage) UsageSnapshot {
+	var snap UsageSnapshot
+	if usage.Input.Available() {
+		snap.Input = usage.Input.ValueOrZero()
+		snap.InputPresent = true
+		snap.HasUsage = true
+	}
+	if usage.Output.Available() {
+		snap.Output = usage.Output.ValueOrZero()
+		snap.OutputPresent = true
+		snap.HasUsage = true
+	}
+	if usage.Billable != nil {
+		if usage.Billable.CacheRead.Available() {
+			snap.CacheRead = usage.Billable.CacheRead.ValueOrZero()
+			snap.CacheReadPresent = true
+			snap.HasUsage = true
+		}
+		if usage.Billable.CacheWrite.Available() {
+			snap.CacheWrite = usage.Billable.CacheWrite.ValueOrZero()
+			snap.CacheWritePresent = true
+			snap.HasUsage = true
+		}
+	}
+	return snap
 }

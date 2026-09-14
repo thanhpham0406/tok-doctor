@@ -1,0 +1,1 @@
+{"type":"assistant","message":{"id":"msg_cache_read_only","role":"assistant","model":"MiniMax-M3","content":[{"type":"text","text":"synthetic"}],"usage":{"cache_read_input_tokens":11}}}

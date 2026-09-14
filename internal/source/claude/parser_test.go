@@ -73,11 +73,16 @@ func TestParseSessionUsageBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if snap.Input != 720 || snap.Output != 200 || snap.Cached != 0 {
-		t.Fatalf("snapshot = %+v, want input=720 output=200 cached=0", snap)
+	if snap.Input != 720 || snap.Output != 200 {
+		t.Fatalf("snapshot = %+v, want input=720 output=200", snap)
 	}
-	if snap.Total != 920 {
-		t.Fatalf("total = %d, want 920", snap.Total)
+	cached, cachedOK := snap.CachedValue()
+	if !cachedOK || cached != 0 {
+		t.Fatalf("cached = %d (present=%v), want explicit zero", cached, cachedOK)
+	}
+	total, totalOK := snap.TotalValue()
+	if !totalOK || total != 920 {
+		t.Fatalf("total = %d (present=%v), want 920", total, totalOK)
 	}
 	if !snap.HasUsage {
 		t.Fatal("HasUsage = false, want true")
@@ -89,8 +94,9 @@ func TestParseSessionUsageCacheFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if snap.Cached != 3400 {
-		t.Fatalf("cached = %d, want 3400", snap.Cached)
+	cached, ok := snap.CachedValue()
+	if !ok || cached != 3400 {
+		t.Fatalf("cached = %d (present=%v), want 3400", cached, ok)
 	}
 	if snap.CacheRead != 3200 || snap.CacheWrite != 200 {
 		t.Fatalf("cache read/write = %d/%d, want 3200/200", snap.CacheRead, snap.CacheWrite)
@@ -102,8 +108,8 @@ func TestParseSessionUsageSkipsUserAndMalformed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if snap.Total != 0 {
-		t.Fatalf("snapshot = %+v, want total 0", snap)
+	if _, ok := snap.TotalValue(); ok {
+		t.Fatalf("snapshot = %+v, want no total", snap)
 	}
 	if snap.HasUsage {
 		t.Fatal("HasUsage = true, want false")
@@ -126,8 +132,8 @@ func TestParseSessionUsageEmptyFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse empty: %v", err)
 	}
-	if snap.Total != 0 {
-		t.Fatalf("snapshot = %+v, want zero", snap)
+	if _, ok := snap.TotalValue(); ok {
+		t.Fatalf("snapshot = %+v, want no total", snap)
 	}
 	if snap.HasUsage {
 		t.Fatal("HasUsage = true, want false")
@@ -135,15 +141,30 @@ func TestParseSessionUsageEmptyFile(t *testing.T) {
 }
 
 func TestUsageSnapshotToModelUsage(t *testing.T) {
-	u := UsageSnapshot{Input: 10, CacheRead: 2, CacheWrite: 3, Cached: 5, Output: 3, Total: 18, HasUsage: true}.ToModelUsage()
+	u := UsageSnapshot{
+		Input: 10, InputPresent: true,
+		CacheRead: 2, CacheReadPresent: true,
+		CacheWrite: 3, CacheWritePresent: true,
+		Output: 3, OutputPresent: true,
+		HasUsage: true,
+	}.ToModelUsage()
 	if u.Input.ValueOrZero() != 10 || u.Cached.ValueOrZero() != 5 || u.Output.ValueOrZero() != 3 || u.Total.ValueOrZero() != 18 {
 		t.Fatalf("usage = %+v", u)
 	}
-	if u.Total.Kind != model.MeasurementMeasured {
-		t.Fatalf("total kind = %q, want measured", u.Total.Kind)
+	if u.Total.Kind != model.MeasurementDerived {
+		t.Fatalf("total kind = %q, want derived", u.Total.Kind)
+	}
+	if u.Cached.Kind != model.MeasurementDerived {
+		t.Fatalf("cached kind = %q, want derived", u.Cached.Kind)
+	}
+	if u.Input.Kind != model.MeasurementMeasured || u.Output.Kind != model.MeasurementMeasured {
+		t.Fatalf("direct kinds = %q/%q, want measured", u.Input.Kind, u.Output.Kind)
 	}
 	if u.Billable == nil || u.Billable.Input.ValueOrZero() != 15 || u.Billable.CacheRead.ValueOrZero() != 2 || u.Billable.CacheWrite.ValueOrZero() != 3 {
 		t.Fatalf("billable = %+v, want total input 15 with read/write split", u.Billable)
+	}
+	if u.Billable.Input.Kind != model.MeasurementDerived {
+		t.Fatalf("billable input kind = %q, want derived", u.Billable.Input.Kind)
 	}
 }
 
@@ -156,8 +177,20 @@ func TestUsageSnapshotZeroIsUnavailableWithoutPresence(t *testing.T) {
 
 func TestSumSnapshotsAggregates(t *testing.T) {
 	snaps := []UsageSnapshot{
-		{Input: 10, Cached: 5, Output: 3, Total: 18, HasUsage: true},
-		{Input: 20, Cached: 2, Output: 4, Total: 26, HasUsage: true},
+		{
+			Input: 10, InputPresent: true,
+			CacheRead: 3, CacheReadPresent: true,
+			CacheWrite: 2, CacheWritePresent: true,
+			Output: 3, OutputPresent: true,
+			HasUsage: true,
+		},
+		{
+			Input: 20, InputPresent: true,
+			CacheRead: 2, CacheReadPresent: true,
+			CacheWrite: 0, CacheWritePresent: true,
+			Output: 4, OutputPresent: true,
+			HasUsage: true,
+		},
 	}
 	u := SumSnapshots(snaps)
 	if u.Input.ValueOrZero() != 30 || u.Cached.ValueOrZero() != 7 || u.Output.ValueOrZero() != 7 || u.Total.ValueOrZero() != 44 {
@@ -177,8 +210,14 @@ func TestParseSessionExplicitZeroUsageIsMeasured(t *testing.T) {
 		t.Fatal("HasUsage = false, want true for explicit usage object")
 	}
 	u := snap.ToModelUsage()
-	if u.Total.Kind != model.MeasurementMeasured {
-		t.Fatalf("total kind = %q, want measured", u.Total.Kind)
+	if u.Input.Kind != model.MeasurementMeasured || u.Output.Kind != model.MeasurementMeasured {
+		t.Fatalf("direct kinds = %q/%q, want measured explicit zero", u.Input.Kind, u.Output.Kind)
+	}
+	if u.Input.Value == nil || *u.Input.Value != 0 || u.Output.Value == nil || *u.Output.Value != 0 {
+		t.Fatalf("input/output = %v/%v, want explicit zero", u.Input.Value, u.Output.Value)
+	}
+	if u.Total.Kind != model.MeasurementDerived {
+		t.Fatalf("total kind = %q, want derived", u.Total.Kind)
 	}
 	if u.Total.ValueOrZero() != 0 {
 		t.Fatalf("total = %d, want explicit zero", u.Total.ValueOrZero())
@@ -281,7 +320,7 @@ func TestParseSessionEmptyUsageObjectPreservesAbsence(t *testing.T) {
 	if snap.HasUsage {
 		t.Fatalf("HasUsage = true, want false because no fields were reported")
 	}
-	if snap.Input != 0 || snap.Output != 0 || snap.Cached != 0 || snap.Total != 0 {
+	if snap.Input != 0 || snap.Output != 0 || snap.CacheRead != 0 || snap.CacheWrite != 0 {
 		t.Fatalf("snapshot = %+v, want no fields populated", snap)
 	}
 	if snap.HasPositiveUsage() {
@@ -294,8 +333,9 @@ func TestParseSessionCachedOnlyIsPositive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if snap.Cached != 100 {
-		t.Fatalf("cached = %d, want 100", snap.Cached)
+	cached, ok := snap.CachedValue()
+	if !ok || cached != 100 {
+		t.Fatalf("cached = %d (present=%v), want 100", cached, ok)
 	}
 	if !snap.HasPositiveUsage() {
 		t.Fatalf("HasPositiveUsage = false, want true")
@@ -385,6 +425,32 @@ func TestParseSessionConflictDuplicateMarkedNotSilentlyPicked(t *testing.T) {
 	}
 	if session.conflicts != 1 {
 		t.Fatalf("conflicts counter = %d, want 1", session.conflicts)
+	}
+}
+
+func TestParseSessionConflictExcludesUsageFromAggregate(t *testing.T) {
+	session, err := ParseSession(fixturePath(t, "conflict-duplicate-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if session.Usage.HasUsage {
+		t.Fatalf("aggregate = %+v, want conflicted usage excluded", session.Usage)
+	}
+	if session.Usage.HasPositiveUsage() {
+		t.Fatal("HasPositiveUsage = true, want false when the only invocation conflicts")
+	}
+}
+
+func TestParseSessionMixedConflictKeepsAcceptedAggregate(t *testing.T) {
+	session, err := ParseSession(fixturePath(t, "conflict-mixed-session.jsonl"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(session.Invocations) != 2 {
+		t.Fatalf("invocations = %d, want 2 (one conflicted, one accepted)", len(session.Invocations))
+	}
+	if session.Usage.Input != 100 || session.Usage.Output != 20 {
+		t.Fatalf("aggregate = %+v, want accepted turn only (input=100 output=20)", session.Usage)
 	}
 }
 

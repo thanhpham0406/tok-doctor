@@ -127,6 +127,74 @@ An adapter detects its source, reads platform data, and converts it into one or
 more observations. Platform-specific formats stay inside the adapter. Adapters
 must not invent identity or completeness.
 
+## Claude Transcript Projection
+
+A Claude session transcript produces one session-scope observation and one
+turn-scope observation per normalized turn, in source order. The session
+observation is projected first.
+
+Usage mapping:
+
+| Claude usage field | Observation field | kind |
+| --- | --- | --- |
+| `input_tokens` | `freshInput` | measured |
+| `cache_read_input_tokens` | `cachedInput` | measured |
+| `cache_creation_input_tokens` | `cacheCreationInput` | measured |
+| sum of the three input components | `totalInput` | derived |
+| `output_tokens` | `output` | measured |
+| `totalInput + output` | `total` | derived |
+| reasoning output | missing | — |
+
+`input_tokens` is fresh input only. Claude does not expose a separate reasoning
+field, so reasoning is left missing rather than inferred. `totalInput` is
+derived only when fresh input, cache read, and cache creation are all present;
+`total` is derived only when `totalInput` and `output` are present. A missing
+cache field is never treated as zero.
+
+### Missing vs Explicit Zero
+
+A JSON field that is absent produces a missing measurement with a nil value. A
+field present with `0` produces a measured explicit zero with a non-nil value.
+An empty usage object `{}` and a missing usage object both produce no usage at
+all. Negative raw values are never published as token measurements; the
+affected field becomes unknown and dependent derived fields stay missing.
+
+### Outcome and Completeness
+
+Transcript projection always reports `outcome=unknown`: a persisted transcript
+does not prove how the request ended. Completeness is independent of outcome
+and is reported as `unknown` when no usable usage is present, `partial` when
+some usage is missing or non-authoritative, and `complete` when fresh input,
+cached input, cache creation input, output, and the derived totals are all
+present. `outcome=unknown` with `completeness=complete` is valid.
+
+### Session Aggregates
+
+A session aggregate is authoritative per field only when every accepted turn
+reports that field with a valid non-negative value. A field missing from any
+accepted turn, or reported as negative, is not published as a full session
+number; it becomes unknown and dependent derived totals stay missing. Partial
+turns from different calls are therefore never combined into a session that
+looks complete. Explicit zeros are valid reported values: a session whose
+provider-reported fields are all zero is retained and projected with non-nil
+zero values.
+
+### Identity
+
+The adapter does not synthesize provider or agent identity. The session
+observation carries only `sessionId`; each turn observation carries `sessionId`
+and `turnId`. Exchange, agent request, provider request, response object,
+parent response object, invocation, and chain identifiers are left empty.
+
+### Duplicates and Conflicts
+
+Exact duplicate records sharing a provider `message.id` with identical usage
+collapse to a single turn and are not double-counted. When records share a
+`message.id` but report different usage, the turn is non-authoritative: its
+numeric usage is not published, its completeness is `partial`, and the session
+aggregate excludes it. A conflict is never presented as provider-measured
+truth.
+
 ## Matcher
 
 A matcher groups observations that describe the same underlying activity. It

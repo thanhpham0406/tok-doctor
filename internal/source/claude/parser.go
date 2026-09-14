@@ -38,30 +38,41 @@ func (u *usageFields) snapshot() UsageSnapshot {
 		return UsageSnapshot{}
 	}
 	var snap UsageSnapshot
-	populated := false
 	if u.InputTokens != nil {
-		snap.Input += *u.InputTokens
-		populated = true
+		snap.Input = *u.InputTokens
+		snap.InputPresent = true
+		snap.HasUsage = true
+		if *u.InputTokens >= 0 {
+			snap.inputCount = 1
+		}
 	}
 	if u.OutputTokens != nil {
-		snap.Output += *u.OutputTokens
-		populated = true
+		snap.Output = *u.OutputTokens
+		snap.OutputPresent = true
+		snap.HasUsage = true
+		if *u.OutputTokens >= 0 {
+			snap.outputCount = 1
+		}
 	}
 	if u.CacheReadInputTokens != nil {
-		snap.CacheRead += *u.CacheReadInputTokens
-		snap.Cached += *u.CacheReadInputTokens
-		populated = true
+		snap.CacheRead = *u.CacheReadInputTokens
+		snap.CacheReadPresent = true
+		snap.HasUsage = true
+		if *u.CacheReadInputTokens >= 0 {
+			snap.cacheReadCount = 1
+		}
 	}
 	if u.CacheCreationInputTokens != nil {
-		snap.CacheWrite += *u.CacheCreationInputTokens
-		snap.Cached += *u.CacheCreationInputTokens
-		populated = true
+		snap.CacheWrite = *u.CacheCreationInputTokens
+		snap.CacheWritePresent = true
+		snap.HasUsage = true
+		if *u.CacheCreationInputTokens >= 0 {
+			snap.cacheWriteCount = 1
+		}
 	}
-	if !populated {
-		return snap
+	if snap.HasUsage {
+		snap.acceptedCount = 1
 	}
-	snap.HasUsage = true
-	snap.Total = snap.Input + snap.Output + snap.Cached
 	return snap
 }
 
@@ -163,7 +174,6 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 				Timestamp: entry.Timestamp,
 				Context:   invocationContext,
 			})
-			session.Usage = session.Usage.add(usage)
 			pending = appendClaudeAssistantHistory(nil, entry, recordID, historyCount)
 			historyCount++
 			continue
@@ -181,7 +191,6 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 			}
 			seenByMessageID[ident] = inv
 			session.Invocations = append(session.Invocations, inv)
-			session.Usage = session.Usage.add(usage)
 			pending = appendClaudeAssistantHistory(nil, entry, recordID, historyCount)
 			historyCount++
 		case !snapshotsEqual(prev.Snapshot, usage):
@@ -199,7 +208,19 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 	if err := scanner.Err(); err != nil {
 		return ParsedSession{}, err
 	}
+	session.Usage = acceptedUsage(session.Invocations)
 	return session, nil
+}
+
+func acceptedUsage(invocations []invocation) UsageSnapshot {
+	var accumulator usageAccumulator
+	for _, inv := range invocations {
+		if inv.Conflict {
+			continue
+		}
+		accumulator.add(inv.Snapshot)
+	}
+	return accumulator.snapshot()
 }
 
 func appendClaudeMessageContext(components []model.ContextComponent, entry assistantUsage, recordID string, historyCount int) []model.ContextComponent {
@@ -329,7 +350,10 @@ func dedupeContext(components []model.ContextComponent) []model.ContextComponent
 }
 
 func snapshotsEqual(a, b UsageSnapshot) bool {
-	return a.Input == b.Input && a.Cached == b.Cached && a.Output == b.Output && a.Total == b.Total
+	return a.InputPresent == b.InputPresent && a.Input == b.Input &&
+		a.CacheReadPresent == b.CacheReadPresent && a.CacheRead == b.CacheRead &&
+		a.CacheWritePresent == b.CacheWritePresent && a.CacheWrite == b.CacheWrite &&
+		a.OutputPresent == b.OutputPresent && a.Output == b.Output
 }
 
 func isRealModel(model string) bool {

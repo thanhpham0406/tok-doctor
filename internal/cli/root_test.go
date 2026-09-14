@@ -827,20 +827,20 @@ func TestClaudeSessionsJSONMatchesFilteredTerminalSet(t *testing.T) {
 	if err := json.Unmarshal(jsonOut.Bytes(), &result); err != nil {
 		t.Fatalf("decode json: %v\n%s", err, jsonOut.String())
 	}
-	if len(result.Sessions) != 4 {
-		t.Fatalf("sessions = %d, want 4 (basic-session, cached-only, output-only, input-only)", len(result.Sessions))
+	if len(result.Sessions) != 5 {
+		t.Fatalf("sessions = %d, want 5 (basic-session, cached-only, output-only, input-only, explicit-zero)", len(result.Sessions))
 	}
 	gotIDs := map[string]bool{}
 	for _, session := range result.Sessions {
 		gotIDs[session.ID] = true
 	}
-	for _, want := range []string{"basic-session", "cached-only-session", "output-only-session", "input-only-session"} {
+	for _, want := range []string{"basic-session", "cached-only-session", "output-only-session", "input-only-session", "explicit-zero-usage-session"} {
 		if !gotIDs[want] {
 			t.Fatalf("missing session %q, got %v", want, gotIDs)
 		}
 	}
 	for _, out := range []string{terminalOut.String(), jsonOut.String()} {
-		for _, unwanted := range []string{"empty-artifact", "synthetic-only", "explicit-zero", "empty-usage", "<synthetic>"} {
+		for _, unwanted := range []string{"empty-artifact", "synthetic-only", "empty-usage", "<synthetic>"} {
 			if strings.Contains(out, unwanted) {
 				t.Fatalf("output = %q, did not want %q", out, unwanted)
 			}
