@@ -264,6 +264,56 @@ when no field is comparable. The reconciler preserves measurement kinds, does
 not promote estimates to provider-measured values, and does not overwrite the
 source observations.
 
+## Reconciliation Report
+
+The report stage orchestrates the matcher and the reconciler over one set of
+observations. It contains no matching or comparison logic of its own.
+
+```text
+observations
+    |
+    v
+match.Match
+    |
+    v
+reconcile.Reconcile (matched pairs only)
+    |
+    v
+ReconciliationReport
+```
+
+Every matcher result is retained. Only results with `status=matched` are passed
+to the reconciler; ambiguous and unmatched results update counters and never
+produce a reconciliation. A transcript candidate listed by an ambiguous gateway
+is not counted as an unmatched transcript.
+
+Summary counters:
+
+- `GatewayRequests` — request-scope `gateway` observations.
+- `TranscriptTurns` — turn-scope `session_transcript` observations.
+- `Matched` — matched pairs sent to the reconciler.
+- `Equal`, `Different`, `Unavailable` — reconciled pairs by overall status.
+- `AmbiguousGateways` — gateway-side `ambiguous` results.
+- `UnmatchedGateways`, `UnmatchedTranscripts` — unmatched results per side.
+
+Session-scope observations are neither counted as requests or turns nor
+reconciled, and a missing channel is never fabricated. Counters satisfy:
+
+```text
+Matched == len(Reconciliations)
+Matched == Equal + Different + Unavailable
+GatewayRequests == Matched + AmbiguousGateways + UnmatchedGateways
+```
+
+No equivalent transcript formula is applied because one transcript may appear in
+several ambiguity relationships. An orphan transcript is always reported through
+`UnmatchedTranscripts`.
+
+Report order follows matcher order and is independent of input observation
+order; reconciliations appear in matched-result order. The report does not
+mutate observations, match results, or measurement evidence, and shares no
+mutable slice with its inputs.
+
 ## Scope Safety
 
 Do not compare a request-scope observation directly against a session-scope
