@@ -821,9 +821,14 @@ func newInspectCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 	)
 
 	cmd := &cobra.Command{
-		Use:   "inspect <session-id>",
+		Use:   "inspect [session-id]",
 		Short: "Show the authoritative usage and per-turn breakdown of a session",
-		Args:  cobra.ExactArgs(1),
+		Long: "Show the authoritative usage and per-turn breakdown of a session.\n\n" +
+			"Without a session ID, terminal output lists available sessions and asks for one to inspect.",
+		Example: "  tok inspect\n" +
+			"  tok inspect sess-1\n" +
+			"  tok inspect sess-1 --turn 2 --context",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if allTurns && turn > 0 {
 				return fmt.Errorf("--all-turns and --turn cannot be combined")
@@ -831,27 +836,26 @@ func newInspectCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cob
 			if contextAll {
 				context = true
 			}
-			result, err := tok.InspectReport(ctx, args[0])
+			sessionID, err := inspectSessionID(cmd, tok, args, format)
 			if err != nil {
 				return err
 			}
+			result, err := tok.InspectReport(ctx, sessionID)
+			if err != nil {
+				return err
+			}
+			options := reportinspect.Options{
+				AllTurns:     allTurns,
+				Turn:         turn,
+				ShowEvidence: evidence,
+				ShowContext:  context,
+				ContextAll:   contextAll,
+			}
 			switch format {
 			case "terminal":
-				return reportinspect.RenderResult(stdout, result, reportinspect.Options{
-					AllTurns:     allTurns,
-					Turn:         turn,
-					ShowEvidence: evidence,
-					ShowContext:  context,
-					ContextAll:   contextAll,
-				})
+				return reportinspect.RenderResult(stdout, result, options)
 			case "json":
-				return reportinspect.RenderJSONResult(stdout, result, reportinspect.Options{
-					AllTurns:     allTurns,
-					Turn:         turn,
-					ShowEvidence: evidence,
-					ShowContext:  context,
-					ContextAll:   contextAll,
-				})
+				return reportinspect.RenderJSONResult(stdout, result, options)
 			default:
 				return fmt.Errorf("unsupported format %q", format)
 			}

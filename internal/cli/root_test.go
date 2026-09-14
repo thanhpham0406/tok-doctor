@@ -971,13 +971,13 @@ func TestInspectCommandAppearsInHelp(t *testing.T) {
 	}
 }
 
-func TestInspectCommandRequiresExactlyOneArg(t *testing.T) {
+func TestInspectCommandRejectsExtraArgs(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
-	cmd.SetArgs([]string{"inspect"})
+	cmd.SetArgs([]string{"inspect", "sess-1", "sess-2"})
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected error when no id provided")
+		t.Fatal("expected error when two ids are provided")
 	}
 }
 

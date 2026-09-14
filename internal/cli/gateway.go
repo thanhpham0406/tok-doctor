@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/signal"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -64,15 +66,15 @@ func newGatewayStatusCommand(stdout io.Writer, tok *app.App) *cobra.Command {
 			}
 			sort.SliceStable(rows, func(i, j int) bool { return rows[i].Profile < rows[j].Profile })
 			if format == "json" {
-				return writeJSON(stdout, rows)
+				return writeJSON(stdout, redactStatusUpstreams(rows))
 			}
 			if format != "terminal" {
 				return fmt.Errorf("unsupported format %q", format)
 			}
-			if _, err := fmt.Fprintln(stdout, "Profile          State    Proxy                    Requests   Last request"); err != nil {
+			if _, err := fmt.Fprintln(stdout, "Profile          State    Proxy                    Upstream                     Requests  Last request"); err != nil {
 				return err
 			}
-			if _, err := fmt.Fprintln(stdout, "---------------  -------  -----------------------  ---------  -------------"); err != nil {
+			if _, err := fmt.Fprintln(stdout, "---------------  -------  -----------------------  --------------------------  ---------  -------------"); err != nil {
 				return err
 			}
 			for _, row := range rows {
@@ -80,10 +82,11 @@ func newGatewayStatusCommand(stdout io.Writer, tok *app.App) *cobra.Command {
 				if !row.LastSeen.IsZero() {
 					last = humaniseRelative(time.Since(row.LastSeen))
 				}
-				if _, err := fmt.Fprintf(stdout, "%-15s  %-7s  %-23s  %9d  %-13s\n",
+				if _, err := fmt.Fprintf(stdout, "%-15s  %-7s  %-23s  %-26s  %9d  %-13s\n",
 					truncate(row.Profile, 15),
 					row.State,
 					truncate(row.Proxy, 23),
+					truncate(upstreamColumnValue(row.Upstream), 26),
 					row.Requests,
 					last,
 				); err != nil {
@@ -381,6 +384,38 @@ func printGatewayStarted(w io.Writer, results []gateway.StartResult) error {
 		}
 	}
 	return nil
+}
+
+// safeUpstreamURL reduces an upstream base URL to scheme://host/path so status
+// output never carries userinfo, query strings, or fragments. It returns an
+// empty string when the value is missing or cannot be rendered safely.
+func safeUpstreamURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String()
+}
+
+func upstreamColumnValue(raw string) string {
+	if safe := safeUpstreamURL(raw); safe != "" {
+		return safe
+	}
+	return "-"
+}
+
+func redactStatusUpstreams(rows []gateway.StatusEntry) []gateway.StatusEntry {
+	redacted := make([]gateway.StatusEntry, len(rows))
+	for i, row := range rows {
+		row.Upstream = safeUpstreamURL(row.Upstream)
+		redacted[i] = row
+	}
+	return redacted
 }
 
 func truncate(s string, n int) string {
