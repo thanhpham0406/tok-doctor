@@ -60,6 +60,51 @@ func TestDoctorJSONCommand(t *testing.T) {
 	}
 }
 
+func TestDoctorSessionCommandFindsOversizedToolOutput(t *testing.T) {
+	home := t.TempDir()
+	sessions := filepath.Join(home, ".codex", "sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	lines := []any{
+		map[string]any{"type": "session_meta", "payload": map[string]any{"id": "doctor-big"}},
+		map[string]any{"type": "response_item", "payload": map[string]any{"type": "function_call", "call_id": "call-1", "name": "exec_command", "arguments": `{}`}},
+		map[string]any{"type": "response_item", "payload": map[string]any{"type": "function_call_output", "call_id": "call-1", "output": strings.Repeat("x", 65*1024)}},
+		map[string]any{"type": "event_msg", "payload": map[string]any{"type": "token_count", "info": map[string]any{"total_token_usage": map[string]any{"input_tokens": 20000, "cached_input_tokens": 0, "output_tokens": 10, "reasoning_output_tokens": 0, "total_tokens": 20010}}}},
+	}
+	var fixture bytes.Buffer
+	for _, line := range lines {
+		raw, err := json.Marshal(line)
+		if err != nil {
+			t.Fatalf("marshal fixture: %v", err)
+		}
+		fixture.Write(raw)
+		fixture.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(sessions, "doctor-big.jsonl"), fixture.Bytes(), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+	var stdout bytes.Buffer
+	cmd := newRootCommand(context.Background(), &stdout, &bytes.Buffer{}, slog.Default())
+	cmd.SetArgs([]string{"doctor", "doctor-big"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute doctor session: %v", err)
+	}
+	got := stdout.String()
+	for _, want := range []string{"Findings: 1", "TOOL001", "exec_command", "65.0 KiB", "Estimated tokens"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("doctor output = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, strings.Repeat("x", 100)) {
+		t.Fatal("doctor output exposed raw tool output")
+	}
+}
+
 func TestSourcesCommand(t *testing.T) {
 	t.Setenv("TOKDOCTOR_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
 

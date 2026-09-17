@@ -435,7 +435,39 @@ type SessionsResult struct {
 	Sessions []Session `json:"sessions"`
 }
 
+type Severity string
+
+const (
+	SeverityMedium Severity = "medium"
+	SeverityHigh   Severity = "high"
+)
+
+type Confidence string
+
+const (
+	ConfidenceHigh Confidence = "high"
+)
+
 type Finding struct {
-	RuleID string `json:"rule_id"`
-	Title  string `json:"title"`
+	RuleID          string            `json:"rule_id"`
+	Name            string            `json:"name"`
+	Severity        Severity          `json:"severity"`
+	Confidence      Confidence        `json:"confidence"`
+	Title           string            `json:"title"`
+	Description     string            `json:"description"`
+	EstimatedTokens Measurement       `json:"estimatedTokens"`
+	Evidence        []FindingEvidence `json:"evidence"`
+	Recommendation  string            `json:"recommendation"`
+}
+
+// FindingEvidence identifies the observed item behind a finding without
+// exposing tool output content, hashes, paths, prompts, or raw source records.
+type FindingEvidence struct {
+	TurnID          string              `json:"turnId,omitempty"`
+	TurnSequence    int                 `json:"turnSequence"`
+	ToolCallID      string              `json:"toolCallId,omitempty"`
+	ToolName        string              `json:"toolName,omitempty"`
+	OutputBytes     int64               `json:"outputBytes"`
+	EstimatedTokens Measurement         `json:"estimatedTokens"`
+	Completeness    ContextCompleteness `json:"completeness"`
 }

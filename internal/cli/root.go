@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/thanhpham0406/tok-doctor/internal/analyze"
 	"github.com/thanhpham0406/tok-doctor/internal/app"
 	"github.com/thanhpham0406/tok-doctor/internal/model"
 	"github.com/thanhpham0406/tok-doctor/internal/pricing"
@@ -685,10 +686,17 @@ func newDoctorCommand(ctx context.Context, stdout io.Writer, tok *app.App) *cobr
 	var serveUI bool
 
 	cmd := &cobra.Command{
-		Use:   "doctor",
+		Use:   "doctor [session-id]",
 		Short: "Analyze local AI coding-agent token usage",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			result, err := tok.Doctor(ctx)
+			var result analyze.Result
+			var err error
+			if len(args) == 1 {
+				result, err = tok.DoctorSession(ctx, args[0])
+			} else {
+				result, err = tok.Doctor(ctx)
+			}
 			if err != nil {
 				return err
 			}

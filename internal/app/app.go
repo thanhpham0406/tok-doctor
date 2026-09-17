@@ -48,6 +48,14 @@ func (a *App) Doctor(ctx context.Context) (analyze.Result, error) {
 	return a.analyzer.Analyze(ctx, session), nil
 }
 
+func (a *App) DoctorSession(ctx context.Context, id string) (analyze.Result, error) {
+	session, err := a.Inspect(ctx, id)
+	if err != nil {
+		return analyze.Result{}, err
+	}
+	return a.analyzer.Analyze(ctx, session), nil
+}
+
 type usageSource interface {
 	Sessions(ctx context.Context) ([]source.SessionRef, error)
 	Usage(ctx context.Context, refs []source.SessionRef) (model.Usage, error)

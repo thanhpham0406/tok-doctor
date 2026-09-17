@@ -609,9 +609,16 @@ Possible logic:
 
 ```text
 if output_bytes is known and output completeness is complete
-   and output_bytes > configured threshold:
+   and output_bytes > 65536:
     emit finding
 ```
+
+The zero-configuration threshold is 64 KiB. Outputs from 64 KiB through just
+under 256 KiB are medium severity; outputs of 256 KiB or more are high
+severity. A value exactly at the threshold does not produce a finding.
+
+Only tool outputs attributed to a turn are eligible. Trailing context is
+preserved for coverage reporting but is not treated as input sent to a model.
 
 The rule may only compare a size it actually has. When a tool output is
 `truncated` or `unavailable`, the size is a lower bound or missing entirely, so

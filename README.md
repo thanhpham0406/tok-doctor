@@ -92,6 +92,16 @@ Run the doctor command:
 ./bin/tok doctor
 ```
 
+Analyze a recorded session with the deterministic `TOOL001` oversized tool
+output rule:
+
+```bash
+./bin/tok doctor <session-id>
+```
+
+`TOOL001` reports complete tool outputs above 64 KiB. Byte size is observed
+from the local transcript; per-output token contribution remains an estimate.
+
 Get JSON output:
 
 ```bash
