@@ -77,6 +77,49 @@ func functionCallOutputLine(t *testing.T, callID string, output any) string {
 	})
 }
 
+func customToolCallLine(t *testing.T, callID, name, input string) string {
+	t.Helper()
+	return jsonLine(t, map[string]any{
+		"type": "response_item",
+		"payload": map[string]any{
+			"type":    "custom_tool_call",
+			"id":      callID + "-custom",
+			"call_id": callID,
+			"name":    name,
+			"input":   input,
+			"status":  "completed",
+		},
+	})
+}
+
+func customToolCallOutputLine(t *testing.T, callID string, output any) string {
+	t.Helper()
+	return jsonLine(t, map[string]any{
+		"type": "response_item",
+		"payload": map[string]any{
+			"type":    "custom_tool_call_output",
+			"id":      callID + "-custom-out",
+			"call_id": callID,
+			"output":  output,
+		},
+	})
+}
+
+// customTextOutput is the response_item shape Codex uses for a custom tool
+// result: a block list carrying text, not a bare string.
+func customTextOutput(text string) []any {
+	return []any{map[string]any{"type": "input_text", "text": text}}
+}
+
+func encodedLen(t *testing.T, value any) int64 {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal expected output: %v", err)
+	}
+	return int64(len(raw))
+}
+
 func findComponent(t *testing.T, components []model.ContextComponent, kind model.ContextComponentKind) model.ContextComponent {
 	t.Helper()
 	for _, component := range components {
@@ -261,6 +304,195 @@ func TestParseSessionRetainsOnlyHashAndSizeForToolOutput(t *testing.T) {
 	component := findComponent(t, parsed.Snapshots[0].Context, model.ContextToolResult)
 	if !strings.HasPrefix(component.ContentHash, "sha256:") || strings.Contains(component.ContentHash, secretToolOutput) {
 		t.Fatalf("content hash = %q, want a non-raw hash", component.ContentHash)
+	}
+	if rendered := fmt.Sprintf("%+v", parsed); strings.Contains(rendered, secretToolOutput) {
+		t.Fatalf("parsed session retains raw tool output: %s", rendered)
+	}
+}
+
+func findComponents(components []model.ContextComponent, kind model.ContextComponentKind) []model.ContextComponent {
+	var out []model.ContextComponent
+	for _, component := range components {
+		if component.Kind == kind {
+			out = append(out, component)
+		}
+	}
+	return out
+}
+
+// The custom_tool_call shape declares its name on the call and links to its
+// output through call_id, so the output normalizes into the same canonical
+// component the older function_call_output produces.
+func TestParseSessionLinksCustomToolCallOutputToToolName(t *testing.T) {
+	output := customTextOutput("synthetic custom output")
+	path := writeSessionLines(t, []string{
+		customToolCallLine(t, "call-custom", "exec", "echo hi"),
+		customToolCallOutputLine(t, "call-custom", output),
+		tokenCountLine(t, 10, 0, 1, 11),
+		tokenCountLine(t, 20, 0, 2, 22),
+	})
+
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	component := findComponent(t, parsed.Snapshots[0].Context, model.ContextToolResult)
+	if component.ToolCallID != "call-custom" || component.ToolName != "exec" {
+		t.Fatalf("tool linkage = %q/%q, want call-custom/exec", component.ToolCallID, component.ToolName)
+	}
+	if component.ContentBytes == nil || *component.ContentBytes != encodedLen(t, output) {
+		t.Fatalf("content bytes = %v, want %d", component.ContentBytes, encodedLen(t, output))
+	}
+	if component.Completeness != model.ContextCompletenessComplete {
+		t.Fatalf("completeness = %q, want complete", component.Completeness)
+	}
+	if component.Measurement.Kind != model.MeasurementEstimated {
+		t.Fatalf("measurement = %+v, want estimated tokens", component.Measurement)
+	}
+	if !strings.HasPrefix(component.ContentHash, "sha256:") {
+		t.Fatalf("content hash = %q, want a content hash", component.ContentHash)
+	}
+	if len(component.Evidence) != 1 || component.Evidence[0].Field != "payload.output" {
+		t.Fatalf("evidence = %+v, want provenance for the output field", component.Evidence)
+	}
+}
+
+// A textual custom tool output carries a token estimate, like any other text.
+func TestParseSessionEstimatesCustomToolOutputTokens(t *testing.T) {
+	text := strings.Repeat("a", 40)
+	path := writeSessionLines(t, []string{
+		customToolCallLine(t, "call-custom", "exec", "echo hi"),
+		customToolCallOutputLine(t, "call-custom", customTextOutput(text)),
+		tokenCountLine(t, 10, 0, 1, 11),
+		tokenCountLine(t, 20, 0, 2, 22),
+	})
+
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	component := findComponent(t, parsed.Snapshots[0].Context, model.ContextToolResult)
+	if component.Measurement.Kind != model.MeasurementEstimated || component.Measurement.ValueOrZero() != 10 {
+		t.Fatalf("measurement = %+v, want an estimated 10 tokens for 40 runes", component.Measurement)
+	}
+}
+
+// A custom tool output without text keeps its byte size and reports no token
+// estimate, and it must not break the record.
+func TestParseSessionKeepsStructuredCustomToolOutputWithoutTokens(t *testing.T) {
+	output := []any{map[string]any{"type": "image", "data": strings.Repeat("A", 512)}}
+	path := writeSessionLines(t, []string{
+		customToolCallOutputLine(t, "call-custom", output),
+		tokenCountLine(t, 10, 0, 1, 11),
+		tokenCountLine(t, 20, 0, 2, 22),
+	})
+
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	component := findComponent(t, parsed.Snapshots[0].Context, model.ContextToolResult)
+	if component.ContentBytes == nil || *component.ContentBytes != encodedLen(t, output) {
+		t.Fatalf("content bytes = %v, want %d", component.ContentBytes, encodedLen(t, output))
+	}
+	if component.Measurement.Kind != model.MeasurementUnknown {
+		t.Fatalf("measurement = %+v, want unknown for non-text output", component.Measurement)
+	}
+}
+
+// A custom tool output the transcript never linked to a call keeps an empty
+// tool name instead of a guessed one.
+func TestParseSessionLeavesUnknownCustomToolNameEmpty(t *testing.T) {
+	path := writeSessionLines(t, []string{
+		customToolCallOutputLine(t, "call-orphan", customTextOutput("orphan output")),
+		tokenCountLine(t, 10, 0, 1, 11),
+		tokenCountLine(t, 20, 0, 2, 22),
+	})
+
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	component := findComponent(t, parsed.Snapshots[0].Context, model.ContextToolResult)
+	if component.ToolCallID != "call-orphan" {
+		t.Fatalf("tool call id = %q, want the source call id", component.ToolCallID)
+	}
+	if component.ToolName != "" {
+		t.Fatalf("tool name = %q, want empty when the source never declared it", component.ToolName)
+	}
+}
+
+// A custom tool output after the final snapshot belongs to no turn and lands in
+// the trailing context, exactly like the older shape.
+func TestParseSessionPreservesTrailingCustomToolContext(t *testing.T) {
+	path := writeSessionLines(t, []string{
+		customToolCallLine(t, "call-1", "exec", "echo hi"),
+		customToolCallOutputLine(t, "call-1", customTextOutput("first output")),
+		tokenCountLine(t, 100, 0, 10, 110),
+		customToolCallLine(t, "call-2", "exec", "echo hi"),
+		customToolCallOutputLine(t, "call-2", customTextOutput("trailing output")),
+	})
+
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(parsed.Snapshots) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(parsed.Snapshots))
+	}
+	trailing := findComponent(t, parsed.TrailingContext, model.ContextToolResult)
+	if trailing.ToolCallID != "call-2" || trailing.ToolName != "exec" {
+		t.Fatalf("trailing tool = %q/%q, want call-2/exec", trailing.ToolCallID, trailing.ToolName)
+	}
+	if results := findComponents(parsed.Snapshots[0].Context, model.ContextToolResult); len(results) != 1 {
+		t.Fatalf("turn tool results = %d, want the trailing record excluded", len(results))
+	}
+}
+
+// A transcript that mixes both call shapes parses each of them.
+func TestParseSessionReadsMixedToolCallFormats(t *testing.T) {
+	path := writeSessionLines(t, []string{
+		functionCallLine(t, "call-legacy", "functions.exec_command"),
+		functionCallOutputLine(t, "call-legacy", "legacy output"),
+		customToolCallLine(t, "call-custom", "exec", "echo hi"),
+		customToolCallOutputLine(t, "call-custom", customTextOutput("custom output")),
+		tokenCountLine(t, 10, 0, 1, 11),
+		tokenCountLine(t, 20, 0, 2, 22),
+	})
+
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	results := findComponents(parsed.Snapshots[0].Context, model.ContextToolResult)
+	if len(results) != 2 {
+		t.Fatalf("tool results = %d, want both shapes", len(results))
+	}
+	names := map[string]string{}
+	for _, component := range results {
+		names[component.ToolCallID] = component.ToolName
+	}
+	if names["call-legacy"] != "functions.exec_command" || names["call-custom"] != "exec" {
+		t.Fatalf("tool names = %+v, want each output linked to its own call", names)
+	}
+	if parsed.Usage.Total != 22 {
+		t.Fatalf("usage total = %d, want usage parsing untouched", parsed.Usage.Total)
+	}
+}
+
+// The canonical model keeps a hash and a size for a custom tool output, never
+// the output text itself.
+func TestParseSessionRetainsOnlyHashAndSizeForCustomToolOutput(t *testing.T) {
+	path := writeSessionLines(t, []string{
+		customToolCallLine(t, "call-custom", "exec", "echo hi"),
+		customToolCallOutputLine(t, "call-custom", customTextOutput(secretToolOutput)),
+		tokenCountLine(t, 10, 0, 1, 11),
+		tokenCountLine(t, 20, 0, 2, 22),
+	})
+
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
 	}
 	if rendered := fmt.Sprintf("%+v", parsed); strings.Contains(rendered, secretToolOutput) {
 		t.Fatalf("parsed session retains raw tool output: %s", rendered)

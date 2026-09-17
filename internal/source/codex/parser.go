@@ -82,8 +82,9 @@ type responseItemPayload struct {
 	Output    json.RawMessage `json:"output"`
 }
 
-// contextBuilder keeps the cross-record state needed to link a function_call
-// to the function_call_output that carries its result.
+// contextBuilder keeps the cross-record state needed to link a tool call, in
+// either the function_call or the custom_tool_call shape, to the output record
+// that carries its result.
 type contextBuilder struct {
 	callNames map[string]string
 }
@@ -255,17 +256,19 @@ func (b *contextBuilder) responseItem(payload json.RawMessage, line int) ([]mode
 			Measurement: source.EstimatedTextMeasurement(text),
 			Evidence:    []model.Evidence{codexProvenance(recordID, "payload.content")},
 		}}, nil
-	case "function_call":
+	case "function_call", "custom_tool_call":
+		// Both call shapes declare the tool name on the call and link to their
+		// result through call_id, so they normalize into the same components.
 		b.registerCall(item)
 		return codexFileComponents(item, recordID), nil
-	case "function_call_output":
+	case "function_call_output", "custom_tool_call_output":
 		return []model.ContextComponent{b.toolResultComponent(item, recordID)}, nil
 	}
 	return nil, nil
 }
 
 // registerCall remembers the tool name a call ID refers to so the matching
-// function_call_output can carry it. The name is never guessed.
+// output record can carry it. The name is never guessed.
 func (b *contextBuilder) registerCall(item responseItemPayload) {
 	if item.Name == "" {
 		return
