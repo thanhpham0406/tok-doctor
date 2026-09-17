@@ -115,6 +115,26 @@ Completeness is reported by the adapter. The canonical model never infers it.
 - `unknown` — there is not enough evidence to decide between complete and
   partial.
 
+### Completeness of Captured Context
+
+This document describes how completely an observation captured provider usage
+facts. A separate vocabulary describes how completely an adapter read the source
+data behind a context item or a captured body:
+
+```text
+complete     the item was observed in full
+truncated    the item was observed partially, for example cut by a capture limit
+unavailable  the item exists in the source but its content could not be read
+unknown      the source does not state the state
+```
+
+The two vocabularies are not interchangeable. A request can be observed with
+`complete` usage completeness at the observation level while one tool output
+inside it is `truncated` at the context level, and the reverse can also hold.
+Neither vocabulary is ever inferred by the canonical model.
+
+See `adapter-spec.md` for how adapters report captured-context completeness.
+
 ## Authority Is Not Decided Here
 
 The contract does not decide which source is authoritative, whether a total must

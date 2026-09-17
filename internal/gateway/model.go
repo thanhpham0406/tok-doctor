@@ -65,8 +65,23 @@ type ExchangeRequest struct {
 	Endpoint   string                   `json:"endpoint"`
 	Bytes      int64                    `json:"bytes"`
 	BodyHash   string                   `json:"bodyHash,omitempty"`
+	Capture    *CaptureStatus           `json:"capture,omitempty"`
 	Components []model.ContextComponent `json:"components,omitempty"`
 	Metadata   ExchangeRequestMetadata  `json:"metadata,omitempty"`
+}
+
+// CaptureStatus records how much of a request or response body TokDoctor
+// observed. Capture limits never change what is forwarded: a body above the
+// limit is streamed through byte for byte and only the observation is cut.
+type CaptureStatus struct {
+	State         model.ContextCompleteness `json:"state"`
+	CapturedBytes int64                     `json:"capturedBytes"`
+	TotalBytes    int64                     `json:"totalBytes,omitempty"`
+	LimitBytes    int64                     `json:"limitBytes,omitempty"`
+}
+
+func (c *CaptureStatus) Truncated() bool {
+	return c != nil && c.State == model.ContextCompletenessTruncated
 }
 
 type ExchangeRequestMetadata struct {
@@ -115,6 +130,7 @@ type ExchangeResponse struct {
 	Usage             *ObservedUsage               `json:"usage,omitempty"`
 	ProviderUsage     *ProviderUsage               `json:"providerUsage,omitempty"`
 	Stream            bool                         `json:"stream"`
+	Capture           *CaptureStatus               `json:"capture,omitempty"`
 	OpenAIResponses   *OpenAIResponsesResponseMeta `json:"openaiResponses,omitempty"`
 }
 

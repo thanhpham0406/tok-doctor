@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +9,11 @@ import (
 
 	"github.com/thanhpham0406/tok-doctor/internal/model"
 	"github.com/thanhpham0406/tok-doctor/internal/source"
+)
+
+const (
+	claudeFieldRecord    = "record"
+	claudeFieldOversized = "record.oversized"
 )
 
 type assistantUsage struct {
@@ -94,6 +98,16 @@ type ParsedSession struct {
 	Invocations []invocation
 	duplicates  int
 	conflicts   int
+	// TrailingContext holds records that follow the final usage-bearing
+	// assistant message. They belong to no turn, so they are preserved rather
+	// than attributed to the previous one.
+	TrailingContext []model.ContextComponent
+}
+
+// contextBuilder keeps the tool_use names seen so far so a tool_result can
+// carry the name its matching tool_use declared. The name is never inferred.
+type contextBuilder struct {
+	toolUseNames map[string]string
 }
 
 func ParseSessionUsage(path string) (UsageSnapshot, error) {
@@ -118,9 +132,8 @@ func ParseSession(path string) (ParsedSession, error) {
 }
 
 func parseSession(r io.Reader) (ParsedSession, error) {
-	scanner := bufio.NewScanner(r)
-	// Raise the default 64 KiB scanner ceiling
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	reader := source.NewRecordReader(r)
+	builder := &contextBuilder{toolUseNames: map[string]string{}}
 
 	var session ParsedSession
 	// Claude Code records carry provider-issued message.id on every
@@ -130,19 +143,34 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 	var pending []model.ContextComponent
 	historyCount := 0
 
-	for scanner.Scan() {
-		raw := scanner.Bytes()
+	for {
+		raw, line, oversized, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return ParsedSession{}, fmt.Errorf("line %d: %w", line+1, err)
+		}
+		if oversized {
+			pending = append(pending, unreadableRecord(line, claudeFieldOversized, model.ContextCompletenessTruncated))
+			continue
+		}
 		if len(raw) == 0 {
 			continue
 		}
+
 		var entry assistantUsage
 		if err := json.Unmarshal(raw, &entry); err != nil {
+			pending = append(pending, unreadableRecord(line, claudeFieldRecord, model.ContextCompletenessUnavailable))
 			continue
 		}
 		applyTimestamp(&session, entry.Timestamp)
 		recordID := claudeRecordID(entry, len(session.Invocations)+len(pending)+historyCount+1)
+		if entry.Message.Role == "assistant" {
+			builder.registerToolUses(entry.Message.Content)
+		}
 		if entry.Type != "assistant" || entry.Message.Role != "assistant" {
-			pending = appendClaudeMessageContext(pending, entry, recordID, historyCount)
+			pending = builder.messageContext(pending, entry, recordID, historyCount)
 			if entry.Message.Role != "" {
 				historyCount++
 			}
@@ -205,9 +233,7 @@ func parseSession(r io.Reader) (ParsedSession, error) {
 			session.duplicates++
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return ParsedSession{}, err
-	}
+	session.TrailingContext = dedupeContext(pending)
 	session.Usage = acceptedUsage(session.Invocations)
 	return session, nil
 }
@@ -223,10 +249,36 @@ func acceptedUsage(invocations []invocation) UsageSnapshot {
 	return accumulator.snapshot()
 }
 
-func appendClaudeMessageContext(components []model.ContextComponent, entry assistantUsage, recordID string, historyCount int) []model.ContextComponent {
+func unreadableRecord(line int, field string, completeness model.ContextCompleteness) model.ContextComponent {
+	recordID := "claude_session#line:" + fmt.Sprint(line)
+	return source.UnreadableRecordComponent("claude_session", recordID, field, completeness)
+}
+
+// registerToolUses records the name declared by every tool_use block so the
+// matching tool_result can report it without guessing from the output shape.
+func (c *contextBuilder) registerToolUses(raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return
+	}
+	for _, block := range blocks {
+		if block.Type == "tool_use" && block.ID != "" && block.Name != "" {
+			c.toolUseNames[block.ID] = block.Name
+		}
+	}
+}
+
+func (c *contextBuilder) messageContext(components []model.ContextComponent, entry assistantUsage, recordID string, historyCount int) []model.ContextComponent {
 	switch entry.Message.Role {
 	case "user":
-		return append(components, claudeUserComponents(entry, recordID)...)
+		return append(components, c.userComponents(entry, recordID)...)
 	case "assistant":
 		return appendClaudeAssistantHistory(components, entry, recordID, historyCount)
 	default:
@@ -234,8 +286,8 @@ func appendClaudeMessageContext(components []model.ContextComponent, entry assis
 	}
 }
 
-func claudeUserComponents(entry assistantUsage, recordID string) []model.ContextComponent {
-	toolResults := claudeToolResultComponents(entry, recordID)
+func (c *contextBuilder) userComponents(entry assistantUsage, recordID string) []model.ContextComponent {
+	toolResults := c.toolResultComponents(entry, recordID)
 	if len(toolResults) > 0 {
 		return toolResults
 	}
@@ -251,10 +303,11 @@ func claudeUserComponents(entry assistantUsage, recordID string) []model.Context
 	}}
 }
 
-func claudeToolResultComponents(entry assistantUsage, recordID string) []model.ContextComponent {
+func (c *contextBuilder) toolResultComponents(entry assistantUsage, recordID string) []model.ContextComponent {
 	var blocks []struct {
-		Type    string          `json:"type"`
-		Content json.RawMessage `json:"content"`
+		Type      string          `json:"type"`
+		ToolUseID string          `json:"tool_use_id"`
+		Content   json.RawMessage `json:"content"`
 	}
 	if err := json.Unmarshal(entry.Message.Content, &blocks); err != nil {
 		return nil
@@ -264,15 +317,19 @@ func claudeToolResultComponents(entry assistantUsage, recordID string) []model.C
 		if block.Type != "tool_result" {
 			continue
 		}
-		text := claudeTextContent(block.Content)
+		text := source.ToolOutputText(block.Content)
 		component := model.ContextComponent{
-			Kind:        model.ContextToolResult,
-			Source:      "claude_session",
-			Record:      recordID + "#tool_result:" + fmt.Sprint(i+1),
-			ContentHash: source.ContentHash(text),
-			Observation: model.ContextObservedByAgent,
-			Measurement: source.EstimatedTextMeasurement(text),
-			Evidence:    []model.Evidence{claudeProvenance(recordID, "message.content.tool_result")},
+			Kind:         model.ContextToolResult,
+			Source:       "claude_session",
+			Record:       recordID + "#tool_result:" + fmt.Sprint(i+1),
+			ContentHash:  source.ContentHash(text),
+			Observation:  model.ContextObservedByAgent,
+			Measurement:  source.EstimatedTextMeasurement(text),
+			Completeness: model.ContextCompletenessComplete,
+			ToolCallID:   block.ToolUseID,
+			ToolName:     c.toolUseNames[block.ToolUseID],
+			ContentBytes: source.ToolOutputBytes(block.Content),
+			Evidence:     []model.Evidence{claudeProvenance(recordID, "message.content.tool_result")},
 		}
 		out = append(out, component)
 	}

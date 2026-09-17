@@ -5,18 +5,21 @@ import (
 	"fmt"
 
 	"github.com/thanhpham0406/tok-doctor/internal/model"
+	"github.com/thanhpham0406/tok-doctor/internal/source"
 )
 
 type AnthropicMessagesObserver struct{}
 
 func (AnthropicMessagesObserver) Protocol() Protocol { return ProtocolAnthropicMessages }
 
+type anthropicMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
 func (AnthropicMessagesObserver) ParseMetadata(body []byte) ExchangeRequestMetadata {
 	var req struct {
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
+		Messages []anthropicMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil || len(req.Messages) == 0 {
 		return ExchangeRequestMetadata{}
@@ -34,13 +37,10 @@ func (AnthropicMessagesObserver) ParseMetadata(body []byte) ExchangeRequestMetad
 
 func (AnthropicMessagesObserver) Parse(body []byte) []model.ContextComponent {
 	var req struct {
-		Model    string          `json:"model"`
-		System   json.RawMessage `json:"system"`
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-		Tools []json.RawMessage `json:"tools"`
+		Model    string             `json:"model"`
+		System   json.RawMessage    `json:"system"`
+		Messages []anthropicMessage `json:"messages"`
+		Tools    []json.RawMessage  `json:"tools"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil
@@ -55,6 +55,7 @@ func (AnthropicMessagesObserver) Parse(body []byte) []model.ContextComponent {
 			latestUser = i
 		}
 	}
+	toolNames := anthropicToolNames(req.Messages)
 	for i, m := range req.Messages {
 		switch m.Role {
 		case "user":
@@ -62,11 +63,11 @@ func (AnthropicMessagesObserver) Parse(body []byte) []model.ContextComponent {
 			if i == latestUser {
 				textKind = model.ContextOther
 			}
-			for _, part := range anthropicContentParts(i, m.Role, m.Content, textKind) {
+			for _, part := range anthropicContentParts(i, m.Role, m.Content, textKind, toolNames) {
 				out = append(out, componentFromAnthropicPart(part))
 			}
 		case "assistant":
-			for _, part := range anthropicContentParts(i, m.Role, m.Content, model.ContextHistory) {
+			for _, part := range anthropicContentParts(i, m.Role, m.Content, model.ContextHistory, toolNames) {
 				out = append(out, componentFromAnthropicPart(part))
 			}
 		}
@@ -121,30 +122,48 @@ func anthropicBlockMetadata(raw json.RawMessage) []AnthropicBlockMetadata {
 }
 
 type anthropicContentPart struct {
-	Kind     model.ContextComponentKind
-	Text     string
-	Path     string
-	Position int
-	Role     string
-	Record   string
-	Type     string
+	Kind         model.ContextComponentKind
+	Text         string
+	Path         string
+	Position     int
+	Role         string
+	Record       string
+	Type         string
+	ToolCallID   string
+	ToolName     string
+	ContentBytes *int64
+	Completeness model.ContextCompleteness
 }
 
 func componentFromAnthropicPart(part anthropicContentPart) model.ContextComponent {
-	if part.Text == "" {
-		c := model.ContextComponent{
-			Kind:        part.Kind,
-			Position:    part.Position,
-			Source:      string(ProtocolAnthropicMessages),
-			Record:      part.Record,
-			Path:        part.Path,
-			Observation: ObservationScope,
-			Measurement: model.Measurement{Kind: model.MeasurementUnknown},
+	component := anthropicComponentFor(part.Kind, part.Position, part.Text, part.Path, part.Record, part.Role, part.Type)
+	component.ToolCallID = part.ToolCallID
+	component.ToolName = part.ToolName
+	component.ContentBytes = part.ContentBytes
+	component.Completeness = part.Completeness
+	return component
+}
+
+// anthropicToolNames maps a tool_use ID to the name its own payload declared.
+// A name is never inferred from the result, only read from the matching block.
+func anthropicToolNames(messages []anthropicMessage) map[string]string {
+	names := map[string]string{}
+	for _, message := range messages {
+		var blocks []struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+			Name string `json:"name"`
 		}
-		c.Evidence = []model.Evidence{anthropicEvidence(part.Record, part.Role, part.Type)}
-		return c
+		if err := json.Unmarshal(message.Content, &blocks); err != nil {
+			continue
+		}
+		for _, block := range blocks {
+			if block.Type == "tool_use" && block.ID != "" && block.Name != "" {
+				names[block.ID] = block.Name
+			}
+		}
 	}
-	return anthropicComponentFor(part.Kind, part.Position, part.Text, part.Path, part.Record, part.Role, part.Type)
+	return names
 }
 
 func anthropicComponentFor(kind model.ContextComponentKind, position int, text string, path string, record string, role string, blockType string) model.ContextComponent {
@@ -208,7 +227,7 @@ func anthropicText(raw json.RawMessage) string {
 	return out
 }
 
-func anthropicContentParts(messageIndex int, role string, raw json.RawMessage, textKind model.ContextComponentKind) []anthropicContentPart {
+func anthropicContentParts(messageIndex int, role string, raw json.RawMessage, textKind model.ContextComponentKind, toolNames map[string]string) []anthropicContentPart {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -230,13 +249,15 @@ func anthropicContentParts(messageIndex int, role string, raw json.RawMessage, t
 	out := make([]anthropicContentPart, 0, len(blocks))
 	for blockIndex, block := range blocks {
 		var b struct {
-			Type     string          `json:"type"`
-			Text     string          `json:"text"`
-			Content  json.RawMessage `json:"content"`
-			Path     string          `json:"path"`
-			File     string          `json:"file"`
-			Name     string          `json:"name"`
-			Filename string          `json:"filename"`
+			Type      string          `json:"type"`
+			ID        string          `json:"id"`
+			Text      string          `json:"text"`
+			Content   json.RawMessage `json:"content"`
+			ToolUseID string          `json:"tool_use_id"`
+			Path      string          `json:"path"`
+			File      string          `json:"file"`
+			Name      string          `json:"name"`
+			Filename  string          `json:"filename"`
 		}
 		if err := json.Unmarshal(block, &b); err != nil {
 			continue
@@ -256,13 +277,33 @@ func anthropicContentParts(messageIndex int, role string, raw json.RawMessage, t
 			}
 			out = append(out, anthropicContentPart{Kind: kind, Text: b.Text, Path: path, Position: position, Role: role, Record: record, Type: blockType})
 		case "tool_result":
-			out = append(out, anthropicContentPart{Kind: model.ContextToolResult, Text: anthropicText(b.Content), Position: position, Role: role, Record: record, Type: blockType})
+			out = append(out, anthropicContentPart{
+				Kind:         model.ContextToolResult,
+				Text:         anthropicText(b.Content),
+				Position:     position,
+				Role:         role,
+				Record:       record,
+				Type:         blockType,
+				ToolCallID:   b.ToolUseID,
+				ToolName:     toolNames[b.ToolUseID],
+				ContentBytes: source.ToolOutputBytes(b.Content),
+				Completeness: model.ContextCompletenessComplete,
+			})
 		case "tool_use":
 			text := ""
 			if raw, err := json.Marshal(json.RawMessage(block)); err == nil {
 				text = string(raw)
 			}
-			out = append(out, anthropicContentPart{Kind: model.ContextHistory, Text: text, Position: position, Role: role, Record: record, Type: blockType})
+			out = append(out, anthropicContentPart{
+				Kind:       model.ContextHistory,
+				Text:       text,
+				Position:   position,
+				Role:       role,
+				Record:     record,
+				Type:       blockType,
+				ToolCallID: b.ID,
+				ToolName:   b.Name,
+			})
 		default:
 			path := anthropicBlockPath(b.Path, b.File, b.Filename, b.Name)
 			text := b.Text

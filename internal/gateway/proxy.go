@@ -9,13 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/thanhpham0406/tok-doctor/internal/model"
@@ -96,19 +96,12 @@ func singleSlashJoin(a, b string) string {
 func (p *Proxy) captureMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		body, err := readCappedBody(r.Body)
+		capture, err := p.captureRequest(r)
 		if err != nil {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			http.Error(w, "read request body", http.StatusBadRequest)
 			return
 		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(body)), nil
-		}
-		r.ContentLength = int64(len(body))
 
-		components := p.parseComponents(body)
-		metadata := p.parseMetadata(body)
 		exchange := Exchange{
 			SchemaVersion: ExchangeSchemaVersion,
 			ID:            newExchangeID(),
@@ -120,21 +113,89 @@ func (p *Proxy) captureMiddleware(next http.Handler) http.Handler {
 			Kind:          classifyRequestKind(Protocol(p.Protocol), r.URL.Path, r.Method),
 			Outcome:       OutcomeUnknown,
 			Request: ExchangeRequest{
-				Method:     r.Method,
-				Endpoint:   r.URL.Path,
-				Bytes:      int64(len(body)),
-				BodyHash:   contentHash(body),
-				Components: components,
-				Metadata:   metadata,
+				Method:   r.Method,
+				Endpoint: r.URL.Path,
+				Bytes:    capture.observedBytes(),
+				Capture:  capture.status,
 			},
 		}
-		if p.Observer != nil {
-			exchange.Model = extractModel(body, p.Protocol)
+		// A truncated body is a JSON prefix, so parsing it would invent
+		// components and usage the client never sent.
+		if !capture.status.Truncated() {
+			exchange.Request.BodyHash = contentHash(capture.prefix)
+			exchange.Request.Components = p.parseComponents(capture.prefix)
+			exchange.Request.Metadata = p.parseMetadata(capture.prefix)
+			if p.Observer != nil {
+				exchange.Model = extractModel(capture.prefix, p.Protocol)
+			}
 		}
 
-		ctx := contextWithExchange(r.Context(), &exchange)
+		ctx := contextWithForwardedBody(r.Context(), capture.forwarded)
+		ctx = contextWithExchange(ctx, &exchange)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+type requestCapture struct {
+	prefix    []byte
+	forwarded *forwardedBody
+	status    *CaptureStatus
+}
+
+// observedBytes reports the request size known before forwarding. A truncated
+// body has no measured size yet, so only the declared length is usable and the
+// streamed count replaces it once forwarding completes.
+func (c requestCapture) observedBytes() int64 {
+	if c.status.Truncated() {
+		return c.status.TotalBytes
+	}
+	return int64(len(c.prefix))
+}
+
+// captureRequest buffers at most MaxCaptureBytes of the request body for
+// observation and keeps the forwarded body byte for byte identical. A body
+// above the limit is streamed behind the captured prefix, so a large request
+// is neither rejected nor held in memory in full.
+func (p *Proxy) captureRequest(r *http.Request) (requestCapture, error) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return requestCapture{status: &CaptureStatus{State: model.ContextCompletenessComplete}}, nil
+	}
+
+	buf := bytes.NewBuffer(make([]byte, 0, 64*1024))
+	if _, err := io.Copy(buf, io.LimitReader(r.Body, MaxCaptureBytes+1)); err != nil {
+		_ = r.Body.Close()
+		return requestCapture{}, fmt.Errorf("read request body: %w", err)
+	}
+	captured := buf.Bytes()
+	prefix := captured
+	state := model.ContextCompletenessComplete
+	if len(captured) > MaxCaptureBytes {
+		prefix = captured[:MaxCaptureBytes]
+		state = model.ContextCompletenessTruncated
+	}
+	if p.Observer == nil {
+		state = model.ContextCompletenessUnavailable
+		prefix = nil
+	}
+
+	status := &CaptureStatus{
+		State:         state,
+		CapturedBytes: int64(len(prefix)),
+		LimitBytes:    MaxCaptureBytes,
+	}
+	if r.ContentLength >= 0 {
+		status.TotalBytes = r.ContentLength
+	}
+
+	forwarded := newForwardedBody(io.MultiReader(bytes.NewReader(captured), r.Body), r.Body)
+	r.Body = forwarded
+	r.GetBody = nil
+	if !status.Truncated() {
+		r.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(prefix)), nil
+		}
+	}
+	return requestCapture{prefix: prefix, forwarded: forwarded, status: status}, nil
 }
 
 func classifyRequestKind(protocol Protocol, path, method string) RequestKind {
@@ -210,12 +271,13 @@ func (p *Proxy) observeResponse(resp *http.Response) error {
 	exchange.Response.LatencyMs = time.Since(exchange.StartedAt).Milliseconds()
 
 	if !stream {
-		prefix, err := p.pipeNonStreamBody(resp)
+		prefix, capture, err := p.captureResponseBody(resp)
 		if err != nil {
 			exchange.Outcome = OutcomeTransportFailure
-			p.recordExchange(exchange)
+			p.recordExchange(resp.Request.Context(), exchange)
 			return err
 		}
+		exchange.Response.Capture = capture
 		if respObserver, hasResp := p.Observer.(ResponseObserver); hasResp && len(prefix) > 0 {
 			if meta := respObserver.ParseResponse(prefix); meta != nil {
 				if meta.ResponseObjectID != "" && exchange.Response.ResponseObjectID == "" {
@@ -231,7 +293,7 @@ func (p *Proxy) observeResponse(resp *http.Response) error {
 		}
 		exchange.Outcome = outcomeFromStatus(resp.StatusCode)
 		ProviderUsageToObservedApply(exchange)
-		p.recordExchange(exchange)
+		p.recordExchange(resp.Request.Context(), exchange)
 		return nil
 	}
 
@@ -245,63 +307,99 @@ func (p *Proxy) observeResponse(resp *http.Response) error {
 
 	exchange.Outcome = outcomeFromStatus(resp.StatusCode)
 	ProviderUsageToObservedApply(exchange)
-	p.recordExchange(exchange)
+	p.recordExchange(resp.Request.Context(), exchange)
 	return nil
 }
 
-// pipeNonStreamBody reads the upstream response body once, captures a
-// bounded observation prefix, and re-wraps the rest so the reverse proxy
-// forwards the full body unchanged. The captured prefix is stashed on the
-// request context for usage parsing.
-func (p *Proxy) pipeNonStreamBody(resp *http.Response) ([]byte, error) {
+// captureResponseBody buffers at most MaxCaptureBytes of the upstream
+// response for observation and re-wraps the body so the reverse proxy still
+// forwards every byte. A response above the limit is streamed rather than
+// held in memory, and its capture is reported as truncated so no consumer
+// treats a partial read as the whole answer.
+func (p *Proxy) captureResponseBody(resp *http.Response) ([]byte, *CaptureStatus, error) {
 	if resp == nil || resp.Body == nil {
-		return nil, nil
+		return nil, &CaptureStatus{State: model.ContextCompletenessUnavailable}, nil
 	}
-	full, err := io.ReadAll(resp.Body)
-	if err != nil {
+	buf := bytes.NewBuffer(make([]byte, 0, 64*1024))
+	if _, err := io.Copy(buf, io.LimitReader(resp.Body, MaxCaptureBytes+1)); err != nil {
 		_ = resp.Body.Close()
-		return nil, err
+		return nil, nil, fmt.Errorf("read upstream response body: %w", err)
 	}
-	_ = resp.Body.Close()
-	prefix := full
-	if len(prefix) > MaxCaptureBytes {
-		prefix = prefix[:MaxCaptureBytes]
+	captured := buf.Bytes()
+	prefix := captured
+	state := model.ContextCompletenessComplete
+	if len(captured) > MaxCaptureBytes {
+		prefix = captured[:MaxCaptureBytes]
+		state = model.ContextCompletenessTruncated
 	}
-	resp.Body = io.NopCloser(bytes.NewReader(full))
-	resp.ContentLength = int64(len(full))
-	if resp.Header != nil {
-		resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(full)))
+	status := &CaptureStatus{
+		State:         state,
+		CapturedBytes: int64(len(prefix)),
+		LimitBytes:    MaxCaptureBytes,
 	}
-	if resp.Request != nil {
-		ctx := resp.Request.Context()
-		if existing, ok := ctx.Value(prefixAttachmentKey{}).(*prefixAttachment); ok && existing != nil {
-			existing.prefix = prefix
-			existing.full = full
-		} else {
-			ctx = context.WithValue(ctx, prefixAttachmentKey{}, &prefixAttachment{prefix: prefix, full: full})
-			resp.Request = resp.Request.WithContext(ctx)
-		}
+	if resp.ContentLength >= 0 {
+		status.TotalBytes = resp.ContentLength
 	}
-	return prefix, nil
+	resp.Body = readCloser{Reader: io.MultiReader(bytes.NewReader(captured), resp.Body), Closer: resp.Body}
+	// The forwarded length is unchanged, so upstream Content-Length stays
+	// valid. Only a body we fully buffered can be re-declared.
+	if !status.Truncated() && resp.Header != nil {
+		resp.ContentLength = int64(len(captured))
+		resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(captured)))
+	}
+	return prefix, status, nil
 }
 
-type prefixAttachmentKey struct{}
-
-type prefixAttachment struct {
-	prefix []byte
-	full   []byte
+// readCloser pairs a reassembled body with the upstream body it came from so
+// closing the forwarded stream still closes the upstream connection.
+type readCloser struct {
+	io.Reader
+	io.Closer
 }
 
-func peekCapturedBody(resp *http.Response) ([]byte, bool) {
-	if resp == nil || resp.Request == nil {
-		return nil, false
+// forwardedBody counts and hashes the bytes actually written upstream, so the
+// exchange reports the true request size and hash without ever buffering a
+// large body. The hash is only usable once the body reached EOF.
+type forwardedBody struct {
+	reader   io.Reader
+	closer   io.Closer
+	hash     hash.Hash
+	bytes    int64
+	complete bool
+}
+
+func newForwardedBody(reader io.Reader, closer io.Closer) *forwardedBody {
+	return &forwardedBody{reader: reader, closer: closer, hash: sha256.New()}
+}
+
+func (b *forwardedBody) Read(p []byte) (int, error) {
+	n, err := b.reader.Read(p)
+	if n > 0 {
+		b.bytes += int64(n)
+		_, _ = b.hash.Write(p[:n])
 	}
-	if att := resp.Request.Context().Value(prefixAttachmentKey{}); att != nil {
-		if a, ok := att.(*prefixAttachment); ok {
-			return a.prefix, true
-		}
+	if err == io.EOF {
+		b.complete = true
 	}
-	return nil, false
+	return n, err
+}
+
+func (b *forwardedBody) Close() error { return b.closer.Close() }
+
+// forwarded reports the byte count and body hash of a body that was read to
+// the end. A body that was not fully forwarded reports nothing, because a
+// partial count and a partial hash would both be indistinguishable from the
+// real request.
+func (b *forwardedBody) forwarded() (int64, string, bool) {
+	if !b.complete {
+		return 0, "", false
+	}
+	return b.bytes, contentHashDigest(b.hash), true
+}
+
+func contentHashDigest(digest hash.Hash) string {
+	sum := digest.Sum(nil)
+	return "sha256:" + hex.EncodeToString(sum)
 }
 
 func outcomeFromStatus(status int) RequestOutcome {
@@ -314,13 +412,29 @@ func outcomeFromStatus(status int) RequestOutcome {
 	return OutcomeUpstreamHTTPError
 }
 
-func (p *Proxy) recordExchange(exchange *Exchange) {
+func (p *Proxy) recordExchange(ctx context.Context, exchange *Exchange) {
 	if exchange == nil || p.Recorder == nil {
 		return
 	}
+	applyForwardedRequest(ctx, exchange)
 	if err := p.Recorder.Record(*exchange); err != nil {
 		p.Sink.RecordRecorderFailure(exchange.Profile, asRecorderError(err))
 	}
+}
+
+// applyForwardedRequest replaces the request size and hash estimated from the
+// captured prefix with the values measured while streaming to upstream.
+func applyForwardedRequest(ctx context.Context, exchange *Exchange) {
+	body, ok := forwardedBodyFromContext(ctx)
+	if !ok || body == nil {
+		return
+	}
+	size, bodyHash, complete := body.forwarded()
+	if !complete {
+		return
+	}
+	exchange.Request.Bytes = size
+	exchange.Request.BodyHash = bodyHash
 }
 
 func asRecorderError(err error) *RecorderError {
@@ -347,24 +461,8 @@ func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) 
 	} else {
 		exchange.Outcome = OutcomeTransportFailure
 	}
-	p.recordExchange(exchange)
+	p.recordExchange(r.Context(), exchange)
 	http.Error(w, "upstream gateway unreachable", http.StatusBadGateway)
-}
-
-func readCappedBody(r io.ReadCloser) ([]byte, error) {
-	if r == nil {
-		return nil, nil
-	}
-	defer func() { _ = r.Close() }()
-	buf := bytes.NewBuffer(nil)
-	limited := io.LimitReader(r, MaxCaptureBytes+1)
-	if _, err := io.Copy(buf, limited); err != nil {
-		return nil, fmt.Errorf("read request body: %w", err)
-	}
-	if buf.Len() > MaxCaptureBytes {
-		return nil, fmt.Errorf("request body exceeds %d bytes", MaxCaptureBytes)
-	}
-	return buf.Bytes(), nil
 }
 
 func contentHash(body []byte) string {
@@ -448,47 +546,4 @@ func IsLoopbackAddress(addr string) bool {
 		return true
 	}
 	return IsLoopbackHost(host)
-}
-
-type prefixBuffer struct {
-	mu     []byte
-	limit  int
-	trunc  bool
-	closed atomic.Bool
-}
-
-func newPrefixBuffer(limit int) *prefixBuffer {
-	return &prefixBuffer{limit: limit}
-}
-
-func (p *prefixBuffer) Write(b []byte) (int, error) {
-	if p.closed.Load() {
-		return 0, io.ErrClosedPipe
-	}
-	remaining := p.limit - len(p.mu)
-	if remaining <= 0 {
-		p.trunc = true
-		return len(b), nil
-	}
-	if len(b) > remaining {
-		p.mu = append(p.mu, b[:remaining]...)
-		p.trunc = true
-		return len(b), nil
-	}
-	p.mu = append(p.mu, b...)
-	return len(b), nil
-}
-
-func (p *prefixBuffer) Bytes() []byte {
-	if p == nil {
-		return nil
-	}
-	return append([]byte(nil), p.mu...)
-}
-
-func (p *prefixBuffer) Truncated() bool { return p.trunc }
-
-func (p *prefixBuffer) Close() error {
-	p.closed.Store(true)
-	return nil
 }

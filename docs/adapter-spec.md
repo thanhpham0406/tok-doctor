@@ -226,6 +226,24 @@ Do not load an entire file into memory unless:
 
 Performance changes should be driven by measurement.
 
+### Record Size
+
+A single JSONL record has no fixed display ceiling. An adapter must not impose a
+fixed per-record limit such as a 4 MiB scanner buffer, because one valid large
+record — for example a large tool output — would then fail the whole session.
+
+Memory should grow with one record, never with the file. A record that exceeds a
+safety valve is consumed and reported as unreadable rather than failing the
+session:
+
+```text
+record within valve        -> parse normally
+record above valve         -> skip content, mark the record unreadable
+unreadable record          -> session keeps parsing the remaining records
+```
+
+A skipped record is never silent. See `Record Completeness` below.
+
 ## Parsing
 
 Parsers should be resilient to source evolution.
@@ -237,10 +255,15 @@ Prefer:
 ```text
 known record -> parse
 unknown harmless record -> skip
-malformed required record -> contextual error
+malformed required record -> contextual error, or unreadable context component
 ```
 
 Do not silently ignore malformed records when doing so would corrupt usage or analysis.
+
+A malformed record that only affects context coverage should be reported as an
+unreadable context component instead of failing the session. The component
+carries provenance for the record and no measurement, so reconciliation is not
+affected while the coverage gap stays visible.
 
 Errors should include useful source context.
 
@@ -367,6 +390,64 @@ over preserving full raw tool output when generic analysis does not require it.
 If raw content is required for a rule or future semantic analysis, the data model and privacy implications should be considered explicitly.
 
 Do not log raw prompts, credentials, source code, or tool output unnecessarily.
+
+## Tool Call and Tool Output Metadata
+
+Tool-output analysis needs identity and size, not content. When the source
+provides them, an adapter preserves:
+
+```text
+tool call ID or tool use ID
+tool name
+tool output byte size
+estimated token measurement
+completion state
+provenance evidence
+```
+
+Rules for filling them in:
+
+- link a tool result to its call by the source-issued ID, never by position
+- read the tool name from the call record that declares it; if the source never
+  declares one, leave the name empty
+- report the byte size the output has in the source, and leave it absent when
+  the source omits the output, because a missing output is not a zero-byte one
+- never infer a tool name from the shape of the output
+- never promote an estimated token measurement to a provider-reported one
+
+A structured or multimodal output is not text. Keep its byte size, leave the
+token measurement unknown, and do not fabricate a content hash for text that was
+never extracted.
+
+## Record Completeness
+
+Adapters report how much of a record or captured body was actually observed.
+The canonical vocabulary is:
+
+```text
+complete     the item was observed in full
+truncated    the item was observed partially, for example cut by a capture limit
+unavailable  the item exists in the source but its content could not be read
+unknown      the source does not state the state
+```
+
+Completeness is adapter-reported and never inferred. A truncated or unavailable
+item must not be presented as a complete one, and analysis must be able to tell
+partial coverage from full coverage.
+
+This vocabulary describes captured source data. It is separate from the
+observation completeness used for provider usage records, which is documented in
+`reconciliation-observation.md`.
+
+## Context After the Final Snapshot
+
+Append-only transcripts often end with records that no usage snapshot covers, for
+example a large tool output produced immediately before the session ends.
+
+Those records belong to no turn. Preserve them as trailing session context
+rather than folding them into the previous turn, because the previous turn's
+usage was reported before they existed. Never invent a turn or assign usage the
+source never reported.
 
 ## Source Capabilities
 
@@ -779,7 +860,9 @@ An adapter is complete when:
 - platform-specific records normalize into the canonical model
 - authoritative usage is preserved
 - estimates are clearly identified
-- malformed input produces useful errors
+- tool outputs keep their call ID, tool name, byte size, and completion state
+- one large record never fails the whole session
+- malformed input produces useful errors or visible incomplete coverage
 - harmless unknown events are handled safely
 - no original source data is modified
 - no sensitive content is logged unnecessarily

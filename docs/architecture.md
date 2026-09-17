@@ -344,6 +344,18 @@ Required invariants:
 
 Session files may become very large. Source adapters should stream JSONL and similar formats whenever practical, using a buffered reader and a record parser over the file. Avoid loading whole files into memory unless the format requires it or the size is known to be safe. Optimize only after measurement.
 
+Memory grows with one record, not with the file. There is no fixed per-record ceiling that fails a session: a record above the safety valve is skipped and reported as unreadable context, and parsing continues. A malformed record that only affects context coverage becomes an unreadable context component with provenance and no measurement, so incomplete coverage is visible without corrupting reconciliation.
+
+The same rule applies to capture limits, which bound observation only:
+
+```text
+request above the capture limit -> forwarded upstream byte for byte, observation marked truncated
+response above the capture limit -> forwarded downstream byte for byte, observation marked truncated
+observer unavailable             -> body forwarded unchanged, observation marked unavailable
+```
+
+A capture limit never rejects a request, never alters a forwarded body, and never buffers a large body in full. Capture state is recorded per exchange, and context derived from a truncated body is not parsed, because a partial JSON prefix would invent components and provider usage the client never sent.
+
 ## Storage
 
 No database is required for current analysis.
@@ -589,3 +601,4 @@ Do not build all adapters, persistent storage, auto-fix, cloud features, or hist
 10. An observation ID is not a correlation identity.
 11. Interfaces stay small and purposeful.
 12. Dependencies remain minimal, and simple code is preferred over architectural ceremony.
+13. Observation limits never change what is forwarded, and captured data always reports how complete it is.

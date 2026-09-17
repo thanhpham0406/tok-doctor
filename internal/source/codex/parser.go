@@ -1,7 +1,6 @@
 package codex
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,43 +11,39 @@ import (
 	"github.com/thanhpham0406/tok-doctor/internal/source"
 )
 
-type tokenCountEvent struct {
-	Timestamp string `json:"timestamp"`
-	Payload   struct {
-		Type string `json:"type"`
-		Info struct {
-			TotalTokenUsage struct {
-				InputTokens           int64  `json:"input_tokens"`
-				CachedInputTokens     int64  `json:"cached_input_tokens"`
-				OutputTokens          int64  `json:"output_tokens"`
-				ReasoningOutputTokens *int64 `json:"reasoning_output_tokens"`
-				TotalTokens           int64  `json:"total_tokens"`
-			} `json:"total_token_usage"`
-			LastTokenUsage struct {
-				InputTokens           int64  `json:"input_tokens"`
-				CachedInputTokens     int64  `json:"cached_input_tokens"`
-				OutputTokens          int64  `json:"output_tokens"`
-				ReasoningOutputTokens *int64 `json:"reasoning_output_tokens"`
-				TotalTokens           int64  `json:"total_tokens"`
-			} `json:"last_token_usage"`
-		} `json:"info"`
-	} `json:"payload"`
+const (
+	codexSourceName     = "codex_rollout"
+	codexFieldRecord    = "record"
+	codexFieldOversized = "record.oversized"
+)
+
+type usageInfo struct {
+	InputTokens           int64  `json:"input_tokens"`
+	CachedInputTokens     int64  `json:"cached_input_tokens"`
+	OutputTokens          int64  `json:"output_tokens"`
+	ReasoningOutputTokens *int64 `json:"reasoning_output_tokens"`
+	TotalTokens           int64  `json:"total_tokens"`
 }
 
-type sessionMetaEvent struct {
-	Timestamp string `json:"timestamp"`
-	Type      string `json:"type"`
-	Payload   struct {
-		ID string `json:"id"`
-	} `json:"payload"`
+type tokenCountPayload struct {
+	Type string `json:"type"`
+	Info struct {
+		TotalTokenUsage usageInfo `json:"total_token_usage"`
+		LastTokenUsage  usageInfo `json:"last_token_usage"`
+	} `json:"info"`
 }
 
-type turnContextEvent struct {
-	Timestamp string `json:"timestamp"`
-	Type      string `json:"type"`
-	Payload   struct {
-		Model string `json:"model"`
-	} `json:"payload"`
+type sessionMetaPayload struct {
+	ID string `json:"id"`
+}
+
+type turnContextPayload struct {
+	Model string `json:"model"`
+}
+
+type eventMessagePayload struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }
 
 type snapshot struct {
@@ -64,33 +59,33 @@ type ParsedSession struct {
 	UpdatedAt string
 	Usage     UsageSnapshot
 	Snapshots []snapshot
+	// TrailingContext holds records that follow the final token_count event.
+	// They belong to no snapshot, so they are preserved without inventing a
+	// turn or attributing usage the source never reported.
+	TrailingContext []model.ContextComponent
 }
 
 type codexRecord struct {
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload"`
+	Type      string          `json:"type"`
+	Timestamp string          `json:"timestamp"`
+	Payload   json.RawMessage `json:"payload"`
 }
 
-type responseItemEvent struct {
-	Type    string `json:"type"`
-	Payload struct {
-		Type      string          `json:"type"`
-		ID        string          `json:"id"`
-		Role      string          `json:"role"`
-		Name      string          `json:"name"`
-		CallID    string          `json:"call_id"`
-		Content   json.RawMessage `json:"content"`
-		Arguments string          `json:"arguments"`
-		Output    string          `json:"output"`
-	} `json:"payload"`
+type responseItemPayload struct {
+	Type      string          `json:"type"`
+	ID        string          `json:"id"`
+	Role      string          `json:"role"`
+	Name      string          `json:"name"`
+	CallID    string          `json:"call_id"`
+	Content   json.RawMessage `json:"content"`
+	Arguments string          `json:"arguments"`
+	Output    json.RawMessage `json:"output"`
 }
 
-type codexEventMessage struct {
-	Type    string `json:"type"`
-	Payload struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"payload"`
+// contextBuilder keeps the cross-record state needed to link a function_call
+// to the function_call_output that carries its result.
+type contextBuilder struct {
+	callNames map[string]string
 }
 
 func ParseSessionUsage(path string) (UsageSnapshot, error) {
@@ -116,122 +111,191 @@ func ParseSession(path string) (ParsedSession, error) {
 }
 
 func parseSession(r io.Reader) (ParsedSession, error) {
-	scanner := bufio.NewScanner(r)
-	// Raise the default 64 KiB scanner ceiling
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	reader := source.NewRecordReader(r)
+	builder := &contextBuilder{callNames: map[string]string{}}
 
 	var session ParsedSession
 	var pending []model.ContextComponent
-	line := 0
-	for scanner.Scan() {
-		line++
-		raw := scanner.Bytes()
+
+	for {
+		raw, line, oversized, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return ParsedSession{}, fmt.Errorf("line %d: %w", line+1, err)
+		}
+		if oversized {
+			pending = append(pending, unreadableRecord(line, codexFieldOversized, model.ContextCompletenessTruncated))
+			continue
+		}
 		if len(raw) == 0 {
 			continue
 		}
-		pending = appendCodexContext(pending, raw, line)
-		var meta sessionMetaEvent
-		if err := json.Unmarshal(raw, &meta); err == nil && meta.Type == "session_meta" {
-			if meta.Payload.ID != "" {
-				session.ID = meta.Payload.ID
+
+		var record codexRecord
+		if err := json.Unmarshal(raw, &record); err != nil {
+			pending = append(pending, unreadableRecord(line, codexFieldRecord, model.ContextCompletenessUnavailable))
+			continue
+		}
+		applyTimestamp(&session, record.Timestamp)
+		// A record without a payload carries nothing to read, which is not the
+		// same as a payload this parser failed to read.
+		if len(record.Payload) == 0 {
+			continue
+		}
+
+		switch record.Type {
+		case "session_meta":
+			var meta sessionMetaPayload
+			if err := json.Unmarshal(record.Payload, &meta); err != nil {
+				pending = append(pending, unreadableRecord(line, codexFieldRecord, model.ContextCompletenessUnavailable))
+				continue
 			}
-			applyTimestamp(&session, meta.Timestamp)
-			continue
-		}
-		var turn turnContextEvent
-		if err := json.Unmarshal(raw, &turn); err == nil && turn.Type == "turn_context" {
-			if turn.Payload.Model != "" {
-				session.Model = turn.Payload.Model
+			if meta.ID != "" {
+				session.ID = meta.ID
 			}
-			applyTimestamp(&session, turn.Timestamp)
-			continue
-		}
-		var event tokenCountEvent
-		if err := json.Unmarshal(raw, &event); err != nil {
-			continue
-		}
-		applyTimestamp(&session, event.Timestamp)
-		if event.Payload.Type != "token_count" {
-			continue
-		}
-		snap := snapshotFromEvent(event)
-		session.Snapshots = append(session.Snapshots, snapshot{Snap: snap, Timestamp: event.Timestamp, Context: dedupeContext(pending)})
-		pending = nil
-		if snap.Total >= session.Usage.Total {
-			session.Usage = snap
+		case "turn_context":
+			var turn turnContextPayload
+			if err := json.Unmarshal(record.Payload, &turn); err != nil {
+				pending = append(pending, unreadableRecord(line, codexFieldRecord, model.ContextCompletenessUnavailable))
+				continue
+			}
+			if turn.Model != "" {
+				session.Model = turn.Model
+			}
+		case "response_item":
+			components, err := builder.responseItem(record.Payload, line)
+			if err != nil {
+				pending = append(pending, unreadableRecord(line, codexFieldRecord, model.ContextCompletenessUnavailable))
+				continue
+			}
+			pending = append(pending, components...)
+		case "event_msg":
+			next, snap, ok := builder.eventMessage(record.Payload, record.Timestamp, line)
+			if !ok {
+				pending = append(pending, unreadableRecord(line, codexFieldRecord, model.ContextCompletenessUnavailable))
+				continue
+			}
+			pending = append(pending, next...)
+			if snap == nil {
+				continue
+			}
+			session.Snapshots = append(session.Snapshots, snapshot{
+				Snap:      snap.Snap,
+				Timestamp: record.Timestamp,
+				Context:   dedupeContext(pending),
+			})
+			pending = nil
+			if snap.Snap.Total >= session.Usage.Total {
+				session.Usage = snap.Snap
+			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return ParsedSession{}, err
-	}
+
+	session.TrailingContext = dedupeContext(pending)
 	return session, nil
 }
 
-func appendCodexContext(components []model.ContextComponent, raw []byte, line int) []model.ContextComponent {
-	var record codexRecord
-	if err := json.Unmarshal(raw, &record); err != nil {
-		return components
+// eventMessage returns the context contributed by one event_msg record and,
+// when the record is a token_count, the snapshot it reports.
+func (b *contextBuilder) eventMessage(payload json.RawMessage, timestamp string, line int) ([]model.ContextComponent, *snapshot, bool) {
+	var event eventMessagePayload
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return nil, nil, false
+	}
+	if event.Type == "user_message" {
+		recordID := codexRecordID(line)
+		return []model.ContextComponent{{
+			Kind:        model.ContextUserPrompt,
+			Source:      codexSourceName,
+			Record:      recordID,
+			ContentHash: source.ContentHash(event.Message),
+			Observation: model.ContextObservedByAgent,
+			Measurement: source.EstimatedTextMeasurement(event.Message),
+			Evidence:    []model.Evidence{codexProvenance(recordID, "payload.message")},
+		}}, nil, true
+	}
+	if event.Type != "token_count" {
+		return nil, nil, true
+	}
+	var counts tokenCountPayload
+	if err := json.Unmarshal(payload, &counts); err != nil {
+		return nil, nil, false
+	}
+	snap := snapshotFromEvent(counts)
+	return nil, &snapshot{Snap: snap, Timestamp: timestamp}, true
+}
+
+func (b *contextBuilder) responseItem(payload json.RawMessage, line int) ([]model.ContextComponent, error) {
+	var item responseItemPayload
+	if err := json.Unmarshal(payload, &item); err != nil {
+		return nil, fmt.Errorf("decode response_item payload: %w", err)
 	}
 	recordID := codexRecordID(line)
-	if record.Type == "response_item" {
-		var event responseItemEvent
-		if err := json.Unmarshal(raw, &event); err != nil {
-			return components
-		}
-		if event.Payload.ID != "" {
-			recordID = event.Payload.ID
-		} else if event.Payload.CallID != "" {
-			recordID = event.Payload.CallID
-		}
-		switch event.Payload.Type {
-		case "message":
-			kind := codexMessageKind(event.Payload.Role)
-			if kind == "" {
-				return components
-			}
-			text := codexTextContent(event.Payload.Content)
-			return append(components, model.ContextComponent{
-				Kind:        kind,
-				Source:      "codex_rollout",
-				Record:      recordID,
-				ContentHash: source.ContentHash(text),
-				Observation: model.ContextObservedByAgent,
-				Measurement: source.EstimatedTextMeasurement(text),
-				Evidence:    []model.Evidence{codexProvenance(recordID, "payload.content")},
-			})
-		case "function_call_output":
-			return append(components, model.ContextComponent{
-				Kind:        model.ContextToolResult,
-				Source:      "codex_rollout",
-				Record:      recordID,
-				ContentHash: source.ContentHash(event.Payload.Output),
-				Observation: model.ContextObservedByAgent,
-				Measurement: source.EstimatedTextMeasurement(event.Payload.Output),
-				Evidence:    []model.Evidence{codexProvenance(recordID, "payload.output")},
-			})
-		case "function_call":
-			return append(components, codexFileComponents(event, recordID)...)
-		}
-		return components
+	if item.ID != "" {
+		recordID = item.ID
+	} else if item.CallID != "" {
+		recordID = item.CallID
 	}
-	if record.Type == "event_msg" {
-		var event codexEventMessage
-		if err := json.Unmarshal(raw, &event); err != nil {
-			return components
+
+	switch item.Type {
+	case "message":
+		kind := codexMessageKind(item.Role)
+		if kind == "" {
+			return nil, nil
 		}
-		if event.Payload.Type == "user_message" {
-			return append(components, model.ContextComponent{
-				Kind:        model.ContextUserPrompt,
-				Source:      "codex_rollout",
-				Record:      recordID,
-				ContentHash: source.ContentHash(event.Payload.Message),
-				Observation: model.ContextObservedByAgent,
-				Measurement: source.EstimatedTextMeasurement(event.Payload.Message),
-				Evidence:    []model.Evidence{codexProvenance(recordID, "payload.message")},
-			})
+		text := codexTextContent(item.Content)
+		return []model.ContextComponent{{
+			Kind:        kind,
+			Source:      codexSourceName,
+			Record:      recordID,
+			ContentHash: source.ContentHash(text),
+			Observation: model.ContextObservedByAgent,
+			Measurement: source.EstimatedTextMeasurement(text),
+			Evidence:    []model.Evidence{codexProvenance(recordID, "payload.content")},
+		}}, nil
+	case "function_call":
+		b.registerCall(item)
+		return codexFileComponents(item, recordID), nil
+	case "function_call_output":
+		return []model.ContextComponent{b.toolResultComponent(item, recordID)}, nil
+	}
+	return nil, nil
+}
+
+// registerCall remembers the tool name a call ID refers to so the matching
+// function_call_output can carry it. The name is never guessed.
+func (b *contextBuilder) registerCall(item responseItemPayload) {
+	if item.Name == "" {
+		return
+	}
+	for _, key := range []string{item.CallID, item.ID} {
+		if key != "" {
+			b.callNames[key] = item.Name
 		}
 	}
-	return components
+}
+
+func (b *contextBuilder) toolResultComponent(item responseItemPayload, recordID string) model.ContextComponent {
+	text := source.ToolOutputText(item.Output)
+	return model.ContextComponent{
+		Kind:         model.ContextToolResult,
+		Source:       codexSourceName,
+		Record:       recordID,
+		ContentHash:  source.ContentHash(text),
+		Observation:  model.ContextObservedByAgent,
+		Measurement:  source.EstimatedTextMeasurement(text),
+		Completeness: model.ContextCompletenessComplete,
+		ToolCallID:   item.CallID,
+		ToolName:     b.callNames[item.CallID],
+		ContentBytes: source.ToolOutputBytes(item.Output),
+		Evidence:     []model.Evidence{codexProvenance(recordID, "payload.output")},
+	}
+}
+
+func unreadableRecord(line int, field string, completeness model.ContextCompleteness) model.ContextComponent {
+	return source.UnreadableRecordComponent(codexSourceName, codexRecordID(line), field, completeness)
 }
 
 func codexMessageKind(role string) model.ContextComponentKind {
@@ -268,14 +332,14 @@ func codexTextContent(raw json.RawMessage) string {
 	return b.String()
 }
 
-func codexFileComponents(event responseItemEvent, recordID string) []model.ContextComponent {
-	if event.Payload.Name != "functions.exec_command" && event.Payload.Name != "exec_command" {
+func codexFileComponents(item responseItemPayload, recordID string) []model.ContextComponent {
+	if item.Name != "functions.exec_command" && item.Name != "exec_command" {
 		return nil
 	}
 	var args struct {
 		Cmd string `json:"cmd"`
 	}
-	if err := json.Unmarshal([]byte(event.Payload.Arguments), &args); err != nil || args.Cmd == "" {
+	if err := json.Unmarshal([]byte(item.Arguments), &args); err != nil || args.Cmd == "" {
 		return nil
 	}
 	paths := fileReadPaths(args.Cmd)
@@ -284,7 +348,7 @@ func codexFileComponents(event responseItemEvent, recordID string) []model.Conte
 		rec := recordID + "#file:" + fmt.Sprint(i+1)
 		out = append(out, model.ContextComponent{
 			Kind:        model.ContextFile,
-			Source:      "codex_rollout",
+			Source:      codexSourceName,
 			Record:      rec,
 			Path:        source.NormalizePath(path),
 			Observation: model.ContextObservedByAgent,
@@ -322,11 +386,11 @@ func commandPathArgs(fields []string) []string {
 }
 
 func codexRecordID(line int) string {
-	return "codex_rollout#line:" + fmt.Sprint(line)
+	return codexSourceName + "#line:" + fmt.Sprint(line)
 }
 
 func codexProvenance(recordID, field string) model.Evidence {
-	return model.Evidence{Kind: model.EvidenceProvenance, Source: "codex_rollout", Record: recordID, Field: field}
+	return model.Evidence{Kind: model.EvidenceProvenance, Source: codexSourceName, Record: recordID, Field: field}
 }
 
 func dedupeContext(components []model.ContextComponent) []model.ContextComponent {
@@ -353,8 +417,8 @@ func applyTimestamp(session *ParsedSession, timestamp string) {
 	session.UpdatedAt = timestamp
 }
 
-func snapshotFromEvent(e tokenCountEvent) UsageSnapshot {
-	t := e.Payload.Info.TotalTokenUsage
+func snapshotFromEvent(e tokenCountPayload) UsageSnapshot {
+	t := e.Info.TotalTokenUsage
 	return UsageSnapshot{
 		Input:     t.InputTokens,
 		Cached:    t.CachedInputTokens,

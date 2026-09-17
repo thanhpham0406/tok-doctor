@@ -127,14 +127,15 @@ func (s *Source) ReadSessions(ctx context.Context) ([]model.Session, error) {
 		}
 		finalRecordID := finalSnapshotRecordID(parsed)
 		session := model.Session{
-			ID:        id,
-			Source:    s.Name(),
-			Agent:     model.AgentCodex,
-			StartedAt: parseTime(parsed.StartedAt),
-			UpdatedAt: parseTime(parsed.UpdatedAt),
-			Model:     parsed.Model,
-			Usage:     parsed.Usage.ToModelUsageWithEvidence(finalRecordID),
-			Turns:     reconstructTurns(id, parsed),
+			ID:              id,
+			Source:          s.Name(),
+			Agent:           model.AgentCodex,
+			StartedAt:       parseTime(parsed.StartedAt),
+			UpdatedAt:       parseTime(parsed.UpdatedAt),
+			Model:           parsed.Model,
+			Usage:           parsed.Usage.ToModelUsageWithEvidence(finalRecordID),
+			Turns:           reconstructTurns(id, parsed),
+			TrailingContext: parsed.TrailingContext,
 		}
 		if session.UpdatedAt == nil {
 			session.UpdatedAt = fileModTime(ref.Path)

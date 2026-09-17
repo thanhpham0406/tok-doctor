@@ -523,12 +523,17 @@ Possible evidence:
 
 ```text
 tool name
+tool call ID
 command signature
 output bytes
 estimated tokens
+completeness
 repeat count
 turn IDs
 ```
+
+A tool result carries its call ID and tool name only when the source provides
+them. Adapters must not infer either one.
 
 ### Context Rules
 
@@ -603,9 +608,15 @@ oversized-tool-output
 Possible logic:
 
 ```text
-if output_bytes > configured threshold:
+if output_bytes is known and output completeness is complete
+   and output_bytes > configured threshold:
     emit finding
 ```
+
+The rule may only compare a size it actually has. When a tool output is
+`truncated` or `unavailable`, the size is a lower bound or missing entirely, so
+the rule reports partial coverage instead of an oversize claim. A tool name that
+the source never declared stays empty and must not be guessed from the output.
 
 Possible finding:
 

@@ -34,7 +34,11 @@ type Session struct {
 	Usage       Usage        `json:"usage"`
 	Invocations []Invocation `json:"invocations,omitempty"`
 	Turns       []Turn       `json:"turns,omitempty"`
-	Evidence    []Evidence   `json:"evidence,omitempty"`
+	// TrailingContext holds context recorded after the last usage snapshot.
+	// It belongs to no turn because the source reported no usage for it, so it
+	// is kept instead of being folded into the previous turn.
+	TrailingContext []ContextComponent `json:"trailingContext,omitempty"`
+	Evidence        []Evidence         `json:"evidence,omitempty"`
 }
 
 func (s Session) HasAuthoritativeUsage() bool {

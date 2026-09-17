@@ -21,6 +21,27 @@ const (
 	ContextPayloadUnknown    ContextObservationScope = "unknown"
 )
 
+// ContextCompleteness describes how much of one context item or captured
+// payload TokDoctor actually observed. It is about captured source data, not
+// about provider-reported usage, which uses ObservationCompleteness.
+//
+// Adapters set it only from what the source states. A source that does not
+// report truncation must leave it unknown instead of assuming complete.
+type ContextCompleteness string
+
+const (
+	// ContextCompletenessComplete means the item was observed in full.
+	ContextCompletenessComplete ContextCompleteness = "complete"
+	// ContextCompletenessTruncated means the item was observed partially,
+	// for example a record dropped by a capture limit.
+	ContextCompletenessTruncated ContextCompleteness = "truncated"
+	// ContextCompletenessUnavailable means the item exists in the source but
+	// TokDoctor could not read its content at all.
+	ContextCompletenessUnavailable ContextCompleteness = "unavailable"
+	// ContextCompletenessUnknown means the source did not state the state.
+	ContextCompletenessUnknown ContextCompleteness = "unknown"
+)
+
 type ContextAttribution struct {
 	Components     []ContextComponent    `json:"components,omitempty"`
 	Input          InputAccounting       `json:"input,omitempty"`
@@ -37,6 +58,15 @@ type ContextComponent struct {
 	Observation ContextObservationScope `json:"observation"`
 	Measurement Measurement             `json:"measurement"`
 	Evidence    []Evidence              `json:"evidence,omitempty"`
+
+	// ToolCallID and ToolName link a tool result to its call. Both stay empty
+	// when the source does not expose the link or the name.
+	ToolCallID string `json:"toolCallId,omitempty"`
+	ToolName   string `json:"toolName,omitempty"`
+	// ContentBytes is the size a tool output has in the source. It is a byte
+	// count, never a token count, and stays nil when the source omits it.
+	ContentBytes *int64              `json:"contentBytes,omitempty"`
+	Completeness ContextCompleteness `json:"completeness,omitempty"`
 }
 
 type ContextReconciliation struct {

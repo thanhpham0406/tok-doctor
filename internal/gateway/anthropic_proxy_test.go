@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/thanhpham0406/tok-doctor/internal/model"
 )
 
 func TestProxy_AnthropicStreamingObservesUsageAndPreservesBytes(t *testing.T) {
@@ -295,6 +297,13 @@ func TestProxy_AnthropicNonStreamLargeBodyForwardedUnchangedAndUsageUnavailable(
 	}
 	if persisted[0].Response.Status != http.StatusOK {
 		t.Fatalf("status = %d, want 200", persisted[0].Response.Status)
+	}
+	capture := persisted[0].Response.Capture
+	if capture == nil || capture.State != model.ContextCompletenessTruncated {
+		t.Fatalf("capture = %+v, want truncated", capture)
+	}
+	if capture.CapturedBytes != MaxCaptureBytes || capture.LimitBytes != MaxCaptureBytes {
+		t.Fatalf("capture = %+v, want the observation bounded at %d bytes", capture, MaxCaptureBytes)
 	}
 }
 

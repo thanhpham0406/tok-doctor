@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/thanhpham0406/tok-doctor/internal/model"
+	"github.com/thanhpham0406/tok-doctor/internal/source"
 )
 
 type OpenAIResponsesObserver struct{}
@@ -87,22 +88,45 @@ func (OpenAIResponsesObserver) Parse(body []byte) []model.ContextComponent {
 	if text := openAIText(req.Instructions); text != "" {
 		out = append(out, ComponentFor(model.ContextInstructions, len(out), text, ""))
 	}
+	toolNames := openAIFunctionCallNames(req.Input)
 	for _, item := range req.Input {
-		kind, text := openAIInputItem(item)
-		if kind == "" {
+		details, ok := openAIInputItem(item, toolNames)
+		if !ok {
 			continue
 		}
-		if kind == model.ContextFile {
-			out = append(out, ComponentFor(kind, len(out), text, openAIFilePath(item)))
-			continue
-		}
-		out = append(out, ComponentFor(kind, len(out), text, ""))
+		component := ComponentFor(details.Kind, len(out), details.Text, "")
+		component.ToolCallID = details.ToolCallID
+		component.ToolName = details.ToolName
+		component.ContentBytes = details.ContentBytes
+		component.Completeness = details.Completeness
+		out = append(out, component)
 	}
 	if len(req.Tools) > 0 {
 		raw, _ := json.Marshal(req.Tools)
 		out = append(out, ComponentTools(len(out), raw))
 	}
 	return dedupeComponents(out)
+}
+
+// openAIFunctionCallNames maps a call ID to the function name declared by the
+// function_call item that carries it, so the matching output can report the
+// tool name without inferring it from the output shape.
+func openAIFunctionCallNames(input []json.RawMessage) map[string]string {
+	names := map[string]string{}
+	for _, raw := range input {
+		var call struct {
+			Type   string `json:"type"`
+			Name   string `json:"name"`
+			CallID string `json:"call_id"`
+		}
+		if err := json.Unmarshal(raw, &call); err != nil {
+			continue
+		}
+		if call.Type == "function_call" && call.CallID != "" && call.Name != "" {
+			names[call.CallID] = call.Name
+		}
+	}
+	return names
 }
 
 func openAIText(raw json.RawMessage) string {
@@ -126,61 +150,62 @@ func openAIText(raw json.RawMessage) string {
 	return out
 }
 
-func openAIInputItem(raw json.RawMessage) (model.ContextComponentKind, string) {
+// openAIItemDetails is the canonical reading of one input item: what kind of
+// context it is plus, for a function call output, the call it answers.
+type openAIItemDetails struct {
+	Kind         model.ContextComponentKind
+	Text         string
+	ToolCallID   string
+	ToolName     string
+	ContentBytes *int64
+	Completeness model.ContextCompleteness
+}
+
+func openAIInputItem(raw json.RawMessage, toolNames map[string]string) (openAIItemDetails, bool) {
 	if len(raw) == 0 {
-		return "", ""
+		return openAIItemDetails{}, false
 	}
 	var typed struct {
 		Type    string          `json:"type"`
 		Role    string          `json:"role"`
+		CallID  string          `json:"call_id"`
+		CallID2 string          `json:"callId"`
 		Content json.RawMessage `json:"content"`
+		Output  json.RawMessage `json:"output"`
 	}
 	if err := json.Unmarshal(raw, &typed); err != nil {
-		return "", ""
+		return openAIItemDetails{}, false
 	}
 	switch typed.Type {
 	case "function_call_output":
-		var s struct {
-			Output string `json:"output"`
-		}
-		_ = json.Unmarshal(raw, &s)
-		return model.ContextToolResult, s.Output
+		callID := firstNonEmpty(typed.CallID, typed.CallID2)
+		return openAIItemDetails{
+			Kind:         model.ContextToolResult,
+			Text:         source.ToolOutputText(typed.Output),
+			ToolCallID:   callID,
+			ToolName:     toolNames[callID],
+			ContentBytes: source.ToolOutputBytes(typed.Output),
+			Completeness: model.ContextCompletenessComplete,
+		}, true
 	case "message":
 		switch typed.Role {
 		case "user":
-			return model.ContextUserPrompt, openAIText(typed.Content)
-		case "assistant", "system", "developer":
-			if typed.Role == "system" || typed.Role == "developer" {
-				return model.ContextInstructions, openAIText(typed.Content)
-			}
-			return model.ContextHistory, openAIText(typed.Content)
+			return openAIItemDetails{Kind: model.ContextUserPrompt, Text: openAIText(typed.Content)}, true
+		case "system", "developer":
+			return openAIItemDetails{Kind: model.ContextInstructions, Text: openAIText(typed.Content)}, true
+		case "assistant":
+			return openAIItemDetails{Kind: model.ContextHistory, Text: openAIText(typed.Content)}, true
 		}
 	}
 	switch typed.Role {
 	case "user":
-		return model.ContextUserPrompt, openAIText(typed.Content)
+		return openAIItemDetails{Kind: model.ContextUserPrompt, Text: openAIText(typed.Content)}, true
 	case "assistant":
-		return model.ContextHistory, openAIText(typed.Content)
+		return openAIItemDetails{Kind: model.ContextHistory, Text: openAIText(typed.Content)}, true
 	case "system", "developer":
-		return model.ContextInstructions, openAIText(typed.Content)
+		return openAIItemDetails{Kind: model.ContextInstructions, Text: openAIText(typed.Content)}, true
 	}
-	return "", ""
-}
-
-func openAIFilePath(raw json.RawMessage) string {
-	var s struct {
-		File string `json:"file"`
-		Path string `json:"path"`
-		Name string `json:"name"`
-	}
-	_ = json.Unmarshal(raw, &s)
-	if s.File != "" {
-		return s.File
-	}
-	if s.Path != "" {
-		return s.Path
-	}
-	return s.Name
+	return openAIItemDetails{}, false
 }
 
 func (OpenAIResponsesObserver) ParseResponse(body []byte) *ResponseMetadata {
