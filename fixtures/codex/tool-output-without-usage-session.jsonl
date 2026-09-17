@@ -1,0 +1,6 @@
+{"type":"session_meta","payload":{"id":"sess-tool-no-usage"}}
+{"type":"turn_context","payload":{"model":"gpt-5"}}
+{"type":"response_item","payload":{"type":"message","id":"msg-user","role":"user","content":[{"type":"input_text","text":"Inspect the fixture."}]}}
+{"type":"response_item","payload":{"type":"function_call","id":"call-read","call_id":"call-read","name":"functions.exec_command","arguments":"{\"cmd\":\"cat NOTES.md\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","id":"out-read","call_id":"call-read","output":"synthetic output without usage"}}
+{"type":"event_msg","payload":{"type":"turn_complete"}}

@@ -53,6 +53,7 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer, logger *slog.
 	cmd.AddCommand(newUsageCommand(ctx, stdout, tok))
 	cmd.AddCommand(newSessionsCommand(ctx, stdout, tok))
 	cmd.AddCommand(newInspectCommand(ctx, stdout, tok))
+	cmd.AddCommand(newCoverageCommand(ctx, stdout, tok))
 	cmd.AddCommand(newCostCommand(ctx, stdout, tok))
 	cmd.AddCommand(newPricingCommand(stdout, tok))
 	cmd.AddCommand(newSourcesCommand(ctx, stdout, tok))

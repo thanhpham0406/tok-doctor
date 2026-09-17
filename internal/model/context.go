@@ -100,11 +100,24 @@ func SeparateInputAccounting(usage Usage) InputAccounting {
 	}
 }
 
-func ReconcileContext(turn Turn) ContextReconciliation {
+// TurnFreshInput returns the fresh input accounting of a turn. It falls back to
+// the turn usage when the source reported no separate input accounting.
+func TurnFreshInput(turn Turn) Measurement {
+	return turnInputAccounting(turn).Fresh
+}
+
+// turnInputAccounting resolves the input accounting of a turn, falling back to
+// the turn usage when the source reported no separate input accounting.
+func turnInputAccounting(turn Turn) InputAccounting {
 	input := turn.ContextAttribution.Input
 	if !input.Fresh.Available() && !input.Cached.Available() {
-		input = SeparateInputAccounting(turn.Usage)
+		return SeparateInputAccounting(turn.Usage)
 	}
+	return input
+}
+
+func ReconcileContext(turn Turn) ContextReconciliation {
+	input := turnInputAccounting(turn)
 	if !input.Fresh.Available() || !input.Fresh.HasAuthoritativeUsage() {
 		return ContextReconciliation{
 			FreshInput:       input.Fresh,
