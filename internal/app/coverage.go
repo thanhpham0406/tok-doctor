@@ -10,11 +10,8 @@ import (
 	"github.com/thanhpham0406/tok-doctor/internal/source"
 )
 
-// CoverageSession reports tool output coverage for one session, reusing the
-// session lookup rules of tok inspect. Source and aggregate coverage scan every
-// session an adapter returns, but a single session is still addressed by the
-// same id resolution tok inspect uses, so session coverage keeps that lookup
-// unchanged.
+// CoverageSession reports tool output coverage for one session, addressed by
+// the same id resolution tok inspect uses.
 func (a *App) CoverageSession(ctx context.Context, id string) (coverage.Result, error) {
 	session, err := a.Inspect(ctx, id)
 	if err != nil {
@@ -44,9 +41,8 @@ func (a *App) CoverageSource(ctx context.Context, name string) (coverage.Result,
 		return coverage.Result{}, fmt.Errorf("tool output coverage for %s: %w", normalizeName(name), err)
 	}
 	// Coverage reports how much of what a source holds was read, so it scans
-	// every session the adapter returns. Filtering by authoritative provider
-	// usage would hide a session that has tool output but no usage record,
-	// which is exactly a coverage gap the report must show.
+	// every session the adapter returns: filtering by authoritative provider
+	// usage would hide a session that has tool output but no usage record.
 	summary := coverage.Scan(sessions)
 	return coverage.Result{
 		Scope:   coverage.ScopeSource,

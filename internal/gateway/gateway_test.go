@@ -22,8 +22,6 @@ import (
 	"github.com/thanhpham0406/tok-doctor/internal/model"
 )
 
-// --- Profile validation tests -----------------------------------------------
-
 func TestValidateProfiles_DuplicateListen(t *testing.T) {
 	raw := map[string]config.GatewayProfile{
 		"a": {Enabled: true, Listen: "127.0.0.1:9001", Protocol: "anthropic_messages", Source: "claude", Upstream: "http://127.0.0.1:20128"},
@@ -80,8 +78,6 @@ func TestValidateProfiles_EmptyUpstream(t *testing.T) {
 		t.Fatalf("empty upstream must be rejected")
 	}
 }
-
-// --- Multi-profile runtime --------------------------------------------------
 
 func freeLoopback(t *testing.T) (string, func()) {
 	t.Helper()
@@ -176,8 +172,6 @@ func TestRuntime_GracefulShutdown(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 }
-
-// --- Transparent forwarding -------------------------------------------------
 
 type capturedRequest struct {
 	Method string
@@ -288,7 +282,7 @@ func TestProxy_AuthHeaderForwardedNotPersisted(t *testing.T) {
 
 func TestProxy_UpstreamFailureSurfaced(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	dead.Close() // listener immediately dies; any request fails to connect
+	dead.Close()
 
 	listen, _ := freeLoopback(t)
 	rec, _ := NewFileRecorder(t.TempDir())
@@ -471,8 +465,6 @@ func TestProxy_CaptureIncludesProfileSourceProtocol(t *testing.T) {
 	}
 }
 
-// --- Protocol observers -----------------------------------------------------
-
 func TestAnthropic_ClassifiesComponents(t *testing.T) {
 	body := []byte(`{
 		"model":"claude-3-5-sonnet",
@@ -585,8 +577,6 @@ func TestDedupeComponents(t *testing.T) {
 	}
 }
 
-// --- Loopback binding -------------------------------------------------------
-
 func TestIsLoopbackAddress(t *testing.T) {
 	cases := []struct {
 		addr string
@@ -605,8 +595,6 @@ func TestIsLoopbackAddress(t *testing.T) {
 	}
 }
 
-// --- Sanitised upstream -----------------------------------------------------
-
 func TestSanitisedUpstream(t *testing.T) {
 	parsed, _ := url.Parse("http://user:pass@127.0.0.1:20128")
 	got := sanitisedUpstream(parsed)
@@ -614,8 +602,6 @@ func TestSanitisedUpstream(t *testing.T) {
 		t.Fatalf("credentials leaked: %s", got)
 	}
 }
-
-// --- Concurrency -------------------------------------------------------------
 
 type recordingRecorder struct {
 	mu       sync.Mutex
@@ -655,8 +641,6 @@ func TestProxy_NoBlockingOnRecorder(t *testing.T) {
 
 var _ Recorder = (*FileRecorder)(nil)
 var _ Recorder = (*recordingRecorder)(nil)
-
-// --- Purge ------------------------------------------------------------------
 
 func TestFileRecorder_PurgeDeletesTargetOnly(t *testing.T) {
 	dir := t.TempDir()

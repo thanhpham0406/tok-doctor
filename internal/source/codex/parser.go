@@ -79,14 +79,23 @@ type responseItemPayload struct {
 	CallID    string          `json:"call_id"`
 	Content   json.RawMessage `json:"content"`
 	Arguments string          `json:"arguments"`
+	Input     json.RawMessage `json:"input"`
 	Output    json.RawMessage `json:"output"`
+}
+
+// toolCallIdentity is what a call declares about itself and what its result
+// repeats: the name the source stated and a fingerprint of the arguments it
+// stated, both empty when the source stated neither.
+type toolCallIdentity struct {
+	name        string
+	fingerprint string
 }
 
 // contextBuilder keeps the cross-record state needed to link a tool call, in
 // either the function_call or the custom_tool_call shape, to the output record
 // that carries its result.
 type contextBuilder struct {
-	callNames map[string]string
+	calls map[string]toolCallIdentity
 }
 
 func ParseSessionUsage(path string) (UsageSnapshot, error) {
@@ -113,7 +122,7 @@ func ParseSession(path string) (ParsedSession, error) {
 
 func parseSession(r io.Reader) (ParsedSession, error) {
 	reader := source.NewRecordReader(r)
-	builder := &contextBuilder{callNames: map[string]string{}}
+	builder := &contextBuilder{calls: map[string]toolCallIdentity{}}
 
 	var session ParsedSession
 	var pending []model.ContextComponent
@@ -267,33 +276,49 @@ func (b *contextBuilder) responseItem(payload json.RawMessage, line int) ([]mode
 	return nil, nil
 }
 
-// registerCall remembers the tool name a call ID refers to so the matching
-// output record can carry it. The name is never guessed.
+// registerCall remembers what a call ID refers to so the matching output record
+// can carry the name and the argument fingerprint. Neither is ever guessed.
 func (b *contextBuilder) registerCall(item responseItemPayload) {
 	if item.Name == "" {
 		return
 	}
+	identity := toolCallIdentity{
+		name:        item.Name,
+		fingerprint: source.ToolCallFingerprintOrEmpty(item.Name, item.declaredArguments()),
+	}
 	for _, key := range []string{item.CallID, item.ID} {
 		if key != "" {
-			b.callNames[key] = item.Name
+			b.calls[key] = identity
 		}
 	}
 }
 
+// declaredArguments returns the arguments a call record states, from the
+// arguments field of the function_call shape or the input field of the
+// custom_tool_call shape.
+func (item responseItemPayload) declaredArguments() json.RawMessage {
+	if item.Arguments != "" {
+		return json.RawMessage(item.Arguments)
+	}
+	return item.Input
+}
+
 func (b *contextBuilder) toolResultComponent(item responseItemPayload, recordID string) model.ContextComponent {
 	text := source.ToolOutputText(item.Output)
+	identity := b.calls[item.CallID]
 	return model.ContextComponent{
-		Kind:         model.ContextToolResult,
-		Source:       codexSourceName,
-		Record:       recordID,
-		ContentHash:  source.ContentHash(text),
-		Observation:  model.ContextObservedByAgent,
-		Measurement:  source.EstimatedTextMeasurement(text),
-		Completeness: model.ContextCompletenessComplete,
-		ToolCallID:   item.CallID,
-		ToolName:     b.callNames[item.CallID],
-		ContentBytes: source.ToolOutputBytes(item.Output),
-		Evidence:     []model.Evidence{codexProvenance(recordID, "payload.output")},
+		Kind:                model.ContextToolResult,
+		Source:              codexSourceName,
+		Record:              recordID,
+		ContentHash:         source.ContentHash(text),
+		Observation:         model.ContextObservedByAgent,
+		Measurement:         source.EstimatedTextMeasurement(text),
+		Completeness:        model.ContextCompletenessComplete,
+		ToolCallID:          item.CallID,
+		ToolName:            identity.name,
+		ToolCallFingerprint: identity.fingerprint,
+		ContentBytes:        source.ToolOutputBytes(item.Output),
+		Evidence:            []model.Evidence{codexProvenance(recordID, "payload.output")},
 	}
 }
 

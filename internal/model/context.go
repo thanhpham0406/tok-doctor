@@ -63,6 +63,11 @@ type ContextComponent struct {
 	// when the source does not expose the link or the name.
 	ToolCallID string `json:"toolCallId,omitempty"`
 	ToolName   string `json:"toolName,omitempty"`
+	// ToolCallFingerprint is an opaque, versioned digest of the tool name and
+	// the canonicalized arguments the source declared for this call. It stays
+	// internal: the arguments themselves never enter the canonical model, and
+	// the digest is never serialized.
+	ToolCallFingerprint string `json:"-"`
 	// ContentBytes is the size a tool output has in the source. It is a byte
 	// count, never a token count, and stays nil when the source omits it.
 	ContentBytes *int64              `json:"contentBytes,omitempty"`

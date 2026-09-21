@@ -29,7 +29,10 @@ type Summary struct {
 }
 
 func New() *Analyzer {
-	return &Analyzer{rules: []rule{ruletool.NewOversizedOutput(0)}}
+	return &Analyzer{rules: []rule{
+		ruletool.NewOversizedOutput(0),
+		ruletool.NewRepeatedToolCall(),
+	}}
 }
 
 func (a *Analyzer) Analyze(ctx context.Context, session model.Session) Result {

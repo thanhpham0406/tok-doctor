@@ -98,10 +98,7 @@ func renderSummary(w io.Writer, indent string, summary corecoverage.Summary) err
 	return err
 }
 
-// renderCompleteness prints the completeness counts under their own header, so
-// the reader sees that they describe recognized tool outputs only and that the
-// unreadable records reported next are a different population rather than part
-// of this denominator.
+// renderCompleteness prints the completeness counts of recognized tool outputs.
 func renderCompleteness(w io.Writer, indent string, summary corecoverage.Summary) error {
 	if _, err := fmt.Fprintf(w, "\n%sRecognized tool outputs:\n", indent); err != nil {
 		return err
@@ -125,9 +122,8 @@ func renderCompleteness(w io.Writer, indent string, summary corecoverage.Summary
 	return err
 }
 
-// renderUnreadableRecords prints the records TokDoctor could not read in full.
-// They are reported apart from the recognized tool outputs because a record
-// whose content or kind stayed unknown is not evidence of a tool output.
+// renderUnreadableRecords prints the records TokDoctor could not read in full,
+// apart from the recognized tool outputs.
 func renderUnreadableRecords(w io.Writer, indent string, summary corecoverage.Summary) error {
 	if _, err := fmt.Fprintf(w, "\n%s%-*s%d (%s)\n", indent, labelWidth, "Unreadable records:",
 		summary.UnreadableRecords, plural(summary.UnreadableSessions, "session")); err != nil {

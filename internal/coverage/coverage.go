@@ -56,13 +56,6 @@ type Bytes struct {
 // Completeness counts recognized tool outputs by how much of them the source
 // let TokDoctor observe. An output whose source stated nothing is counted as
 // unknown.
-//
-// Recognized means the source record was read well enough to know it holds a
-// tool result: every member of this type is a model.ContextToolResult
-// component. A record whose kind or content could not be read is not counted
-// here, because there is no evidence it holds tool output at all. That other
-// population is reported by Summary.UnreadableRecords and stays outside every
-// denominator built from Completeness.
 type Completeness struct {
 	Complete    int `json:"complete"`
 	Truncated   int `json:"truncated"`
@@ -81,11 +74,8 @@ type Summary struct {
 	WithToolName        Ratio `json:"withToolName"`
 	// RecognizedToolOutputCompleteness counts how much of each recognized tool
 	// output the source let TokDoctor observe. Its denominator is ToolOutputs,
-	// so it answers "of the tool outputs that were recognized, how complete is
-	// each one" and never "how much of the session was read". A record whose
-	// content or kind could not be read is not part of it: it is not known to
-	// hold tool output, so adding it would compare unlike records and overstate
-	// both the count and the denominator. See UnreadableRecords.
+	// so it never answers "how much of the session was read". See
+	// UnreadableRecords for the records it excludes.
 	RecognizedToolOutputCompleteness Completeness      `json:"recognizedToolOutputCompleteness"`
 	TrailingContext                  int               `json:"trailingContext"`
 	WithFreshInput                   Ratio             `json:"withFreshInput"`
@@ -93,10 +83,8 @@ type Summary struct {
 	EstimatedTokens                  model.Measurement `json:"estimatedTokens"`
 	// UnreadableRecords counts source records TokDoctor read only partially or
 	// not at all. These sit outside ToolOutputs and outside
-	// RecognizedToolOutputCompleteness. A record that is already recognized as a
-	// tool result is counted here as well when it was truncated or unavailable,
-	// but a record that stayed unreadable is never added to the tool output
-	// count, because nothing shows it holds tool output.
+	// RecognizedToolOutputCompleteness, because nothing shows an unreadable
+	// record holds tool output.
 	UnreadableRecords  int `json:"unreadableRecords"`
 	UnreadableSessions int `json:"unreadableSessions"`
 }
@@ -193,11 +181,6 @@ func (s *scanState) session(session model.Session) {
 
 // component folds one context component into the summary and reports whether
 // the record it came from was only partially readable.
-//
-// Only a component the adapter recognized as a tool result enters the tool
-// output count. A record TokDoctor could not read stays a component of unknown
-// kind, so it raises the unreadable count without ever entering the tool output
-// denominator.
 func (s *scanState) component(component model.ContextComponent, linked bool) bool {
 	if component.Kind == model.ContextToolResult {
 		s.toolOutput(component, linked)

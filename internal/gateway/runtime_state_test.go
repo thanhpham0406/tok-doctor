@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// --- stateStore tests --------------------------------------------------------
-
 func TestStateStore_WriteIsAtomicAndRestrictive(t *testing.T) {
 	dir := t.TempDir()
 	store := newStateStore(dir)
@@ -66,8 +64,6 @@ func TestStateStore_WriteValidatesFields(t *testing.T) {
 		t.Fatalf("expected control token required")
 	}
 }
-
-// --- Runtime state lifecycle --------------------------------------------------
 
 type stubProcess struct {
 	alive  bool
@@ -170,8 +166,6 @@ func TestRuntime_GracefulShutdownRemovesState(t *testing.T) {
 		t.Fatalf("expected runtime state removed on shutdown")
 	}
 }
-
-// --- Status validation across processes --------------------------------------
 
 func TestStatus_RunningWhenAnotherProcessHasLiveState(t *testing.T) {
 	listen, _ := freeLoopback(t)

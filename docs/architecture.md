@@ -238,13 +238,16 @@ The analyzer is the session pipeline. It is not the reconciliation pipeline.
 
 Rules detect token and context problems from canonical data. The analyzer holds an explicit rule list and runs every rule it holds.
 
-One diagnostic rule is implemented and enabled by default:
+Two diagnostic rules are implemented and enabled by default:
 
 | Rule | Name | Detects |
 | --- | --- | --- |
 | `TOOL001` | `oversized-tool-output` | a complete tool result above 64 KiB in a turn's context attribution |
+| `TOOL002` | `repeated-tool-call` | a tool that appears to have been called more than once with the same normalized arguments and the same complete result content |
 
 `TOOL001` reports byte size as observed from the transcript. Its token contribution stays an estimate and is reported as such; the rule never presents it as provider-reported usage. It skips truncated or unavailable tool results, because only a complete result has a trustworthy size.
+
+`TOOL002` matches on the tool name, a tool call fingerprint, and the result content hash together, and only when the source declared a distinct non-empty tool call ID for each occurrence. Adapters build the fingerprint from the arguments the source declared for a call and attach it to the linked result; the rule never parses source formats and never sees raw arguments. Because a repeat can be legitimate, the finding says the tool *appears* to have been called repeatedly and reports only the repeats after the first as an estimated token impact. The fingerprint is internal and is never serialized, rendered, or logged.
 
 The remaining rule families are specified in [`rule-spec.md`](rule-spec.md) and are not implemented:
 
@@ -252,7 +255,6 @@ The remaining rule families are specified in [`rule-spec.md`](rule-spec.md) and 
 MCP001   unused-mcp
 MCP002   oversized-mcp-schema
 
-TOOL002  repeated-tool-call
 TOOL003  repeated-file-read
 
 CTX001   runaway-context-growth
@@ -313,7 +315,7 @@ A `derived` measurement may be trustworthy, but it is never called provider-meas
 
 Confidence describes how certain TokDoctor is about a diagnosis, independently of how a value was produced. [`rule-spec.md`](rule-spec.md) defines `high`, `medium`, and `low` for rules.
 
-`model.Confidence` currently defines only `high`, the value `TOOL001` reports, because byte size above a threshold is observed directly rather than inferred. The matcher uses its own confidence scale (`high` for shared identity, `medium` for a heuristic match).
+`model.Confidence` currently defines only `high`, the value both implemented rules report, because they act on directly observed transcript data: a byte size above a threshold, and a repeated call the source itself declared with distinct call IDs and identical normalized arguments and result content. The matcher uses its own confidence scale (`high` for shared identity, `medium` for a heuristic match).
 
 Provider-reported usage takes precedence over local estimation. TokDoctor must never present estimated attribution as exact provider usage.
 
@@ -482,7 +484,7 @@ tokdoctor/
 │   │   ├── terminal/
 │   │   └── usage/
 │   ├── rule/
-│   │   └── tool/         TOOL001
+│   │   └── tool/         TOOL001, TOOL002
 │   ├── source/
 │   │   ├── catalog/      detector registry, not an observation catalog
 │   │   ├── claude/
@@ -594,7 +596,7 @@ This history is kept for context.
 
 - Codex and Claude source adapters: discovery, session and turn normalization, authoritative usage
 - canonical session and observation models
-- analyzer with one implemented rule, `TOOL001 oversized-tool-output`
+- analyzer with two implemented rules, `TOOL001 oversized-tool-output` and `TOOL002 repeated-tool-call`
 - per-turn context attribution and context reconciliation
 - observation producers for Codex, Claude, and the gateway
 - matcher and reconciler, reachable through `tok inspect`
@@ -607,7 +609,7 @@ Partial or missing:
 
 - `tok inspect` reconciles but does not return an analysis result, and `tok doctor` analyzes but does not reconcile
 - `tok doctor` without a session ID analyzes a placeholder session instead of discovering one
-- only one diagnostic rule is implemented; the rest of the rule families in [`rule-spec.md`](rule-spec.md) are unimplemented
+- two diagnostic rules are implemented (`TOOL001`, `TOOL002`); the rest of the rule families in [`rule-spec.md`](rule-spec.md) are unimplemented
 - 9Router is detection and endpoint probe only
 - no agent telemetry producer
 - no dependent-lineage tracking between observations

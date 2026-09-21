@@ -21,7 +21,7 @@ Supported today:
 * **Coverage** — `tok coverage tool-output` reports how much tool output a source actually let TokDoctor observe
 * **Inspection and reconciliation** — `tok inspect` shows a session's per-turn usage, context attribution, and how gateway-captured requests compare against the session transcript
 * **Gateway capture** — `tok gateway` proxies local API traffic, records request metadata, and reports per-profile usage
-* **Diagnostic rules** — one rule is implemented and enabled: `TOOL001 oversized-tool-output`, which reports complete tool outputs above 64 KiB
+* **Diagnostic rules** — two rules are implemented and enabled: `TOOL001 oversized-tool-output`, which reports complete tool outputs above 64 KiB, and `TOOL002 repeated-tool-call`, which reports conservatively matched repeated tool calls
 * **Terminal and JSON output** — every report command supports both, via `--format terminal|json`
 * **Local Web UI** — `tok doctor --ui` or `tok ui` serves a UI on `127.0.0.1`
 
@@ -92,7 +92,7 @@ Check the version:
 ```
 
 List the sessions TokDoctor can read, then analyze one with the deterministic
-`TOOL001` oversized tool output rule:
+`TOOL001` oversized tool output and `TOOL002` repeated tool call rules:
 
 ```bash
 ./bin/tok sessions
@@ -101,6 +101,13 @@ List the sessions TokDoctor can read, then analyze one with the deterministic
 
 `TOOL001` reports complete tool outputs above 64 KiB. Byte size is observed
 from the local transcript; per-output token contribution remains an estimate.
+
+`TOOL002` reports a tool that appears to have been called more than once with
+the same normalized arguments when every complete result had the same content,
+and only when the source declared a distinct tool call ID for each call. It
+cannot see whether a repeat was legitimate, so stateful operations and polling
+may be reported; the token impact it shows is an estimate of repeated tool
+output, not provider-measured waste.
 
 `tok doctor` without a session ID does not discover a session yet. It analyzes
 a placeholder and reports no findings, so pass a session ID for a real result.
@@ -291,15 +298,15 @@ See [`SECURITY.md`](SECURITY.md) for the security model.
 ## Current Status
 
 The Codex and Claude vertical slices are complete: discovery, streaming parse,
-authoritative usage, normalization, context attribution, the `TOOL001` rule,
-and terminal, JSON, and Web UI rendering.
+authoritative usage, normalization, context attribution, the `TOOL001` and
+`TOOL002` rules, and terminal, JSON, and Web UI rendering.
 
 Implemented but not yet finished:
 
 * `tok inspect` reconciles gateway capture against a session transcript, but it returns no analysis result, so it does not show findings
 * `tok doctor` runs the rules but does not reconcile
 * `tok doctor` without a session ID analyzes a placeholder session instead of discovering one
-* only one diagnostic rule is implemented; the other rule families are specified in [`docs/rule-spec.md`](docs/rule-spec.md) but not built
+* two diagnostic rules are implemented (`TOOL001`, `TOOL002`); the other rule families are specified in [`docs/rule-spec.md`](docs/rule-spec.md) but not built
 * 9Router is detected and probed, but produces no sessions or usage
 
 ## Contributing

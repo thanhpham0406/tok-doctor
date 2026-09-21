@@ -104,10 +104,19 @@ type ParsedSession struct {
 	TrailingContext []model.ContextComponent
 }
 
-// contextBuilder keeps the tool_use names seen so far so a tool_result can
-// carry the name its matching tool_use declared. The name is never inferred.
+// toolUseIdentity is what a tool_use block declares about itself and what its
+// result repeats: the name the source stated and a fingerprint of the input it
+// stated, both empty when the source stated neither.
+type toolUseIdentity struct {
+	name        string
+	fingerprint string
+}
+
+// contextBuilder keeps the tool_use declarations seen so far so a tool_result
+// can carry the name and the argument fingerprint its matching tool_use stated.
+// Neither is ever inferred.
 type contextBuilder struct {
-	toolUseNames map[string]string
+	toolUses map[string]toolUseIdentity
 }
 
 func ParseSessionUsage(path string) (UsageSnapshot, error) {
@@ -133,7 +142,7 @@ func ParseSession(path string) (ParsedSession, error) {
 
 func parseSession(r io.Reader) (ParsedSession, error) {
 	reader := source.NewRecordReader(r)
-	builder := &contextBuilder{toolUseNames: map[string]string{}}
+	builder := &contextBuilder{toolUses: map[string]toolUseIdentity{}}
 
 	var session ParsedSession
 	// Claude Code records carry provider-issued message.id on every
@@ -254,23 +263,27 @@ func unreadableRecord(line int, field string, completeness model.ContextComplete
 	return source.UnreadableRecordComponent("claude_session", recordID, field, completeness)
 }
 
-// registerToolUses records the name declared by every tool_use block so the
-// matching tool_result can report it without guessing from the output shape.
+// registerToolUses records what every tool_use block declares so the matching
+// tool_result can report it without guessing from the output shape.
 func (c *contextBuilder) registerToolUses(raw json.RawMessage) {
 	if len(raw) == 0 {
 		return
 	}
 	var blocks []struct {
-		Type string `json:"type"`
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		Type  string          `json:"type"`
+		ID    string          `json:"id"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
 	}
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		return
 	}
 	for _, block := range blocks {
 		if block.Type == "tool_use" && block.ID != "" && block.Name != "" {
-			c.toolUseNames[block.ID] = block.Name
+			c.toolUses[block.ID] = toolUseIdentity{
+				name:        block.Name,
+				fingerprint: source.ToolCallFingerprintOrEmpty(block.Name, block.Input),
+			}
 		}
 	}
 }
@@ -318,18 +331,20 @@ func (c *contextBuilder) toolResultComponents(entry assistantUsage, recordID str
 			continue
 		}
 		text := source.ToolOutputText(block.Content)
+		identity := c.toolUses[block.ToolUseID]
 		component := model.ContextComponent{
-			Kind:         model.ContextToolResult,
-			Source:       "claude_session",
-			Record:       recordID + "#tool_result:" + fmt.Sprint(i+1),
-			ContentHash:  source.ContentHash(text),
-			Observation:  model.ContextObservedByAgent,
-			Measurement:  source.EstimatedTextMeasurement(text),
-			Completeness: model.ContextCompletenessComplete,
-			ToolCallID:   block.ToolUseID,
-			ToolName:     c.toolUseNames[block.ToolUseID],
-			ContentBytes: source.ToolOutputBytes(block.Content),
-			Evidence:     []model.Evidence{claudeProvenance(recordID, "message.content.tool_result")},
+			Kind:                model.ContextToolResult,
+			Source:              "claude_session",
+			Record:              recordID + "#tool_result:" + fmt.Sprint(i+1),
+			ContentHash:         source.ContentHash(text),
+			Observation:         model.ContextObservedByAgent,
+			Measurement:         source.EstimatedTextMeasurement(text),
+			Completeness:        model.ContextCompletenessComplete,
+			ToolCallID:          block.ToolUseID,
+			ToolName:            identity.name,
+			ToolCallFingerprint: identity.fingerprint,
+			ContentBytes:        source.ToolOutputBytes(block.Content),
+			Evidence:            []model.Evidence{claudeProvenance(recordID, "message.content.tool_result")},
 		}
 		out = append(out, component)
 	}

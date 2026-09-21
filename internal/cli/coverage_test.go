@@ -234,9 +234,9 @@ func TestCoverageToolOutputSourceAggregatesSessions(t *testing.T) {
 	}
 }
 
-// TestCoverageToolOutputSourceCountsSessionWithoutUsage pins the fix: a session
-// holding tool output but no provider usage stays in the scan, its tool output
-// is counted, and that output is not linked to fresh input it never reported.
+// A session holding tool output but no provider usage stays in the scan, its
+// tool output is counted, and that output is not linked to fresh input it never
+// reported.
 func TestCoverageToolOutputSourceCountsSessionWithoutUsage(t *testing.T) {
 	coverageHomeWithCodexFixtures(t, "basic-session.jsonl", "tool-output-without-usage-session.jsonl")
 
@@ -264,8 +264,8 @@ func TestCoverageToolOutputSourceCountsSessionWithoutUsage(t *testing.T) {
 	}
 }
 
-// TestCoverageToolOutputAllCountsSessionWithoutUsage pins the same fix at the
-// aggregate scope: the pooled and per-source summaries both keep the session.
+// At the aggregate scope the pooled and per-source summaries both keep the
+// session.
 func TestCoverageToolOutputAllCountsSessionWithoutUsage(t *testing.T) {
 	coverageHomeWithCodexFixtures(t, "basic-session.jsonl", "tool-output-without-usage-session.jsonl")
 

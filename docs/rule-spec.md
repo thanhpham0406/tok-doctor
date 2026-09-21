@@ -652,6 +652,68 @@ Confidence: MEASURED
 Observed input increase: 18,421 tokens
 ```
 
+## Implemented: Repeated Tool Call
+
+Rule:
+
+```text
+TOOL002
+repeated-tool-call
+```
+
+Status: implemented with a deliberately conservative V1 condition.
+
+V1 condition:
+
+```text
+group tool results by (tool name, tool call fingerprint, output content hash)
+require at least two distinct non-empty source-provided tool call IDs
+require every occurrence to be a complete tool result
+emit one finding per group
+```
+
+The tool call fingerprint is a versioned SHA-256 digest of the tool name and the
+canonicalized arguments the source declared for the call. It is computed inside
+the source adapters and never enters findings, rendered output, or logs. V1 does
+not treat different commands as equivalent: `git status` and `git status --short`
+are different calls, and a shell command is never normalized semantically.
+
+`TOOL002` matches on all three parts of the key together. It never groups by
+tool name alone, output hash alone, fingerprint alone, timestamp, or byte size,
+because any of those would claim a repeat that the transcript does not show.
+
+A repeat is legitimate for stateful operations, polling, and calls whose earlier
+result was no longer valid. The finding therefore says the tool *appears* to have
+been called more than once with the same normalized arguments, and never that a
+call was unnecessary.
+
+Only the occurrences after the first are counted as repeated output, and only
+measurements the source actually provides are summed. The reported token impact
+is an estimate of repeated tool output, described as a potential context
+contribution rather than measured waste. A missing measurement stays missing and
+is never reported as zero.
+
+Possible finding:
+
+```text
+Rule: TOOL002
+Severity: MEDIUM
+Confidence: HIGH
+
+Tool:
+exec_command
+
+Repeated calls:
+2 complete results with the same normalized arguments and the same content
+
+Estimated repeated tool output:
+512 tokens (estimated, not provider-reported)
+
+Recommendation:
+Reuse the earlier result when it is still valid, or narrow later calls to
+request only new information.
+```
+
 ## Example: Repeated File Read
 
 Rule:

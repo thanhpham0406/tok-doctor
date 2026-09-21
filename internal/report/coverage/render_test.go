@@ -129,10 +129,8 @@ func TestRenderTerminalSessionSummary(t *testing.T) {
 	}
 }
 
-// TestRenderTerminalSeparatesRecognizedCompletenessFromUnreadableRecords covers
-// the case the flat list used to blur: every recognized tool output is
-// complete, while records the source could not read stay outside that
-// denominator instead of reading as more complete output.
+// Every recognized tool output is complete, while records the source could not
+// read stay outside that denominator instead of reading as more complete output.
 func TestRenderTerminalSeparatesRecognizedCompletenessFromUnreadableRecords(t *testing.T) {
 	result := sessionResult(model.Session{
 		ID: "sess-1",
@@ -361,10 +359,9 @@ func TestRenderJSONKeepsUndefinedRatioNull(t *testing.T) {
 	}
 }
 
-// TestRenderJSONNamesBothPopulations keeps the two groups distinguishable for
-// machine readers: completeness is named for the recognized tool outputs it
-// counts, and the unreadable records that stay outside that denominator are
-// reported under their own keys.
+// Completeness is named for the recognized tool outputs it counts, and the
+// unreadable records that stay outside that denominator are reported under
+// their own keys.
 func TestRenderJSONNamesBothPopulations(t *testing.T) {
 	result := sessionResult(model.Session{
 		ID: "sess-1",

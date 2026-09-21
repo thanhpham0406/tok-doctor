@@ -192,7 +192,6 @@ func TestRequestProviderSummary_AttributionGapUsesTotalInput(t *testing.T) {
 	if s.Coverage == nil || s.Coverage.Percent == nil {
 		t.Fatalf("Coverage nil")
 	}
-	// 500 / 920 * 100 = 54.3...
 	pct := *s.Coverage.Percent
 	if pct < 54.0 || pct > 54.5 {
 		t.Fatalf("Coverage = %.2f, want ~54.3", pct)
