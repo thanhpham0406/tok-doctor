@@ -48,7 +48,7 @@ func (r RepeatedToolCall) Analyze(ctx context.Context, session model.Session) []
 	builder := &repeatedCallBuilder{groups: map[repeatedCallGroupKey]*repeatedCallGroup{}}
 	for _, turn := range turnsInSequenceOrder(session.Turns) {
 		if ctx.Err() != nil {
-			return nil
+			return builder.findings()
 		}
 		for _, component := range turn.ContextAttribution.Components {
 			builder.observe(turn, component)
@@ -108,32 +108,50 @@ func repeatedCallCandidate(component model.ContextComponent) bool {
 }
 
 func (g *repeatedCallGroup) finding() model.Finding {
-	estimated := estimatedRepeatedOutput(g.occurrences)
+	estimate := estimatedRepeatedOutput(g.occurrences)
 	return model.Finding{
 		RuleID:          RepeatedToolCallRuleID,
 		Name:            RepeatedToolCallRuleName,
 		Severity:        model.SeverityMedium,
 		Confidence:      model.ConfidenceHigh,
 		Title:           fmt.Sprintf("%s repeated the same tool call", g.key.ToolName),
-		Description:     repeatedCallDescription(g.key.ToolName, len(g.occurrences), estimated),
-		EstimatedTokens: estimated,
+		Description:     repeatedCallDescription(g.key.ToolName, len(g.occurrences), estimate),
+		EstimatedTokens: estimate.Measurement,
 		Evidence:        g.evidence(),
 		Recommendation:  "Reuse the earlier result when it is still valid, or narrow later calls to request only new information.",
 	}
 }
 
-func repeatedCallDescription(toolName string, occurrences int, estimated model.Measurement) string {
+func repeatedCallDescription(toolName string, occurrences int, estimate repeatedOutputEstimate) string {
 	description := fmt.Sprintf(
 		"%s appears to have been called %d times with the same normalized arguments, and every complete result had the same content. The first occurrence is the baseline and the %d later ones are repeated calls.",
 		toolName, occurrences, occurrences-1,
 	)
-	if !estimated.Available() {
-		return description + " Their repeated tool output could not be sized, so its token contribution is unavailable."
+	return description + " " + repeatedOutputEstimateDescription(estimate)
+}
+
+func repeatedOutputEstimateDescription(estimate repeatedOutputEstimate) string {
+	if estimate.Available == 0 {
+		return "Their repeated tool output could not be sized, so its token contribution is unavailable."
+	}
+	if estimate.Available == estimate.Total {
+		return fmt.Sprintf(
+			"Their estimated repeated tool output is %d tokens: a potential context contribution, not measured waste.",
+			estimate.Measurement.ValueOrZero(),
+		)
 	}
 	return fmt.Sprintf(
-		"%s Their estimated repeated tool output is %d tokens: a potential context contribution, not measured waste.",
-		description, estimated.ValueOrZero(),
+		"The observed portion of their repeated tool output is at least %d estimated tokens across %d of %d repeated results; the remaining %s no token estimate.",
+		estimate.Measurement.ValueOrZero(), estimate.Available, estimate.Total,
+		unmeasuredOccurrencesClause(estimate.Total-estimate.Available),
 	)
+}
+
+func unmeasuredOccurrencesClause(count int) string {
+	if count == 1 {
+		return "result has"
+	}
+	return fmt.Sprintf("%d results have", count)
 }
 
 func (g *repeatedCallGroup) evidence() []model.FindingEvidence {
@@ -150,32 +168,40 @@ func (o repeatedCallOccurrence) evidence() model.FindingEvidence {
 		TurnSequence:    o.turn.Sequence,
 		ToolCallID:      o.component.ToolCallID,
 		ToolName:        o.component.ToolName,
-		OutputBytes:     outputByteSize(o.component),
+		OutputBytes:     outputByteSize(o.component.ContentBytes),
 		EstimatedTokens: o.component.Measurement,
 		Completeness:    o.component.Completeness,
 	}
 }
 
-func outputByteSize(component model.ContextComponent) int64 {
-	if component.ContentBytes == nil {
-		return 0
+func outputByteSize(contentBytes *int64) *int64 {
+	if contentBytes == nil {
+		return nil
 	}
-	return *component.ContentBytes
+	return model.Int64(*contentBytes)
 }
 
-func estimatedRepeatedOutput(occurrences []repeatedCallOccurrence) model.Measurement {
+type repeatedOutputEstimate struct {
+	Measurement model.Measurement
+	Available   int
+	Total       int
+}
+
+func estimatedRepeatedOutput(occurrences []repeatedCallOccurrence) repeatedOutputEstimate {
+	estimate := repeatedOutputEstimate{Total: len(occurrences) - 1}
 	var total int64
-	seen := false
 	for _, occurrence := range occurrences[1:] {
 		measurement := occurrence.component.Measurement
 		if !measurement.Available() {
 			continue
 		}
-		seen = true
+		estimate.Available++
 		total += measurement.ValueOrZero()
 	}
-	if !seen {
-		return model.Measurement{Kind: model.MeasurementUnknown}
+	if estimate.Available == 0 {
+		estimate.Measurement = model.Measurement{Kind: model.MeasurementUnknown}
+		return estimate
 	}
-	return model.NewMeasurement(total, model.MeasurementEstimated)
+	estimate.Measurement = model.NewMeasurement(total, model.MeasurementEstimated)
+	return estimate
 }

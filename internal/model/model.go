@@ -463,11 +463,13 @@ type Finding struct {
 // FindingEvidence identifies the observed item behind a finding without
 // exposing tool output content, hashes, paths, prompts, or raw source records.
 type FindingEvidence struct {
-	TurnID          string              `json:"turnId,omitempty"`
-	TurnSequence    int                 `json:"turnSequence"`
-	ToolCallID      string              `json:"toolCallId,omitempty"`
-	ToolName        string              `json:"toolName,omitempty"`
-	OutputBytes     int64               `json:"outputBytes"`
+	TurnID       string `json:"turnId,omitempty"`
+	TurnSequence int    `json:"turnSequence"`
+	ToolCallID   string `json:"toolCallId,omitempty"`
+	ToolName     string `json:"toolName,omitempty"`
+	// OutputBytes stays nil when the source did not report the size, so an
+	// unobserved size is never presented as a zero-byte output.
+	OutputBytes     *int64              `json:"outputBytes,omitempty"`
 	EstimatedTokens Measurement         `json:"estimatedTokens"`
 	Completeness    ContextCompleteness `json:"completeness"`
 }

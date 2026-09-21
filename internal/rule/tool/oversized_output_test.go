@@ -57,8 +57,9 @@ func TestOversizedOutput(t *testing.T) {
 			if got[0].RuleID != OversizedOutputRuleID || got[0].Severity != tt.severity || got[0].Confidence != model.ConfidenceHigh {
 				t.Fatalf("finding = %+v", got[0])
 			}
-			if got[0].Evidence[0].OutputBytes != *tt.component.ContentBytes {
-				t.Fatalf("evidence = %+v", got[0].Evidence[0])
+			evidence := got[0].Evidence[0]
+			if evidence.OutputBytes == nil || *evidence.OutputBytes != *tt.component.ContentBytes {
+				t.Fatalf("evidence = %+v, want the observed byte size", evidence)
 			}
 		})
 	}

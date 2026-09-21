@@ -65,7 +65,10 @@ func TestRepeatedToolCallGroupsOneFindingPerRepeatedGroup(t *testing.T) {
 	}
 }
 
-func TestRepeatedToolCallCountsOnlyOccurrencesAfterTheBaseline(t *testing.T) {
+// Every repeated occurrence has a measurement, so the total is the complete
+// repeated output. The baseline is excluded because only the repeats can be
+// avoided.
+func TestRepeatedToolCallSumsEveryRepeatedMeasurement(t *testing.T) {
 	baseline := repeatedCallComponent("call-1")
 	baseline.Measurement = model.NewMeasurement(100, model.MeasurementEstimated)
 	second := repeatedCallComponent("call-2")
@@ -93,11 +96,15 @@ func TestRepeatedToolCallCountsOnlyOccurrencesAfterTheBaseline(t *testing.T) {
 		!strings.Contains(findings[0].Description, "not measured waste") {
 		t.Fatalf("description = %q, want the cautious wording", findings[0].Description)
 	}
+	if strings.Contains(findings[0].Description, "at least") {
+		t.Fatalf("description = %q, want no lower-bound wording for a complete total", findings[0].Description)
+	}
 }
 
-// A missing measurement must stay missing. The baseline is never part of the
-// total either, because only the repeats can be avoided.
-func TestRepeatedToolCallKeepsMissingMeasurementsMissing(t *testing.T) {
+// No repeated occurrence has a measurement, so the total stays unavailable. The
+// baseline is never substituted for it either, because only the repeats can be
+// avoided.
+func TestRepeatedToolCallKeepsEveryMissingMeasurementMissing(t *testing.T) {
 	baseline := repeatedCallComponent("call-1")
 	baseline.Measurement = model.NewMeasurement(4096, model.MeasurementEstimated)
 	second := repeatedCallComponent("call-2")
@@ -117,13 +124,20 @@ func TestRepeatedToolCallKeepsMissingMeasurementsMissing(t *testing.T) {
 	if estimated.Available() || estimated.Value != nil {
 		t.Fatalf("estimated tokens = %+v, want unavailable rather than zero", estimated)
 	}
-	if strings.Contains(findings[0].Description, "0 tokens") {
-		t.Fatalf("description = %q, want no invented zero", findings[0].Description)
+	if !strings.Contains(findings[0].Description, "could not be sized") ||
+		!strings.Contains(findings[0].Description, "unavailable") {
+		t.Fatalf("description = %q, want the unavailable wording", findings[0].Description)
+	}
+	for _, invented := range []string{"0 tokens", "at least 0", "is 0 "} {
+		if strings.Contains(findings[0].Description, invented) {
+			t.Fatalf("description = %q, want no invented zero", findings[0].Description)
+		}
 	}
 }
 
-// One unmeasured repeat must not erase a measured one.
-func TestRepeatedToolCallSumsOnlyAvailableMeasurements(t *testing.T) {
+// One unmeasured repeat must not erase a measured one, and the sum must be
+// presented as the observed portion rather than as the complete total.
+func TestRepeatedToolCallReportsAPartialTotalAsALowerBound(t *testing.T) {
 	baseline := repeatedCallComponent("call-1")
 	second := repeatedCallComponent("call-2")
 	second.Measurement = model.Measurement{Kind: model.MeasurementUnknown}
@@ -140,6 +154,55 @@ func TestRepeatedToolCallSumsOnlyAvailableMeasurements(t *testing.T) {
 	}
 	if estimated := findings[0].EstimatedTokens; estimated.ValueOrZero() != 700 || estimated.Kind != model.MeasurementEstimated {
 		t.Fatalf("estimated tokens = %+v, want 700 estimated from the available repeat", estimated)
+	}
+	description := findings[0].Description
+	for _, want := range []string{"observed portion", "at least 700 estimated tokens", "1 of 2 repeated results", "remaining result has no token estimate"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("description = %q, want %q", description, want)
+		}
+	}
+	for _, unwanted := range []string{"estimated repeated tool output is", "potential context contribution", "0 tokens"} {
+		if strings.Contains(description, unwanted) {
+			t.Fatalf("description = %q, must not claim a complete total via %q", description, unwanted)
+		}
+	}
+}
+
+// Several measured repeats and several missing ones keep both counts accurate.
+func TestRepeatedToolCallReportsPartialCoverageAcrossManyOccurrences(t *testing.T) {
+	measured := func(callID string, tokens int64) model.ContextComponent {
+		component := repeatedCallComponent(callID)
+		component.Measurement = model.NewMeasurement(tokens, model.MeasurementEstimated)
+		return component
+	}
+	unmeasured := func(callID string) model.ContextComponent {
+		component := repeatedCallComponent(callID)
+		component.Measurement = model.Measurement{Kind: model.MeasurementUnknown}
+		return component
+	}
+
+	findings := analyzeRepeatedCalls(sessionWithCallTurns(
+		[]model.ContextComponent{measured("call-1", 5000)},
+		[]model.ContextComponent{measured("call-2", 300)},
+		[]model.ContextComponent{unmeasured("call-3")},
+		[]model.ContextComponent{measured("call-4", 450)},
+		[]model.ContextComponent{unmeasured("call-5")},
+	))
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v, want one", findings)
+	}
+	estimated := findings[0].EstimatedTokens
+	if estimated.Kind != model.MeasurementEstimated || estimated.ValueOrZero() != 750 {
+		t.Fatalf("estimated tokens = %+v, want 750 estimated from the two measured repeats", estimated)
+	}
+	description := findings[0].Description
+	for _, want := range []string{"at least 750 estimated tokens", "2 of 4 repeated results", "remaining 2 results have no token estimate"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("description = %q, want %q", description, want)
+		}
+	}
+	if strings.Contains(description, "5000") || strings.Contains(description, "5750") {
+		t.Fatalf("description = %q, want the baseline excluded from the total", description)
 	}
 }
 
@@ -204,8 +267,11 @@ func TestRepeatedToolCallEvidenceIdentifiesEveryOccurrence(t *testing.T) {
 		if got.TurnID != fmt.Sprintf("turn-%d", i+1) || got.TurnSequence != i+1 || got.ToolCallID != want {
 			t.Fatalf("evidence[%d] = %+v, want turn and call identified", i, got)
 		}
-		if got.ToolName != "exec_command" || got.OutputBytes != 4096 || got.Completeness != model.ContextCompletenessComplete {
-			t.Fatalf("evidence[%d] = %+v, want the observed size and completeness", i, got)
+		if got.ToolName != "exec_command" || got.Completeness != model.ContextCompletenessComplete {
+			t.Fatalf("evidence[%d] = %+v, want the observed completeness", i, got)
+		}
+		if got.OutputBytes == nil || *got.OutputBytes != 4096 {
+			t.Fatalf("evidence[%d] = %+v, want the observed byte size", i, got)
 		}
 		if got.EstimatedTokens.ValueOrZero() != 1024 {
 			t.Fatalf("evidence[%d] = %+v, want the occurrence measurement", i, got)
@@ -263,7 +329,7 @@ func TestRepeatedToolCallIgnoresASingleCall(t *testing.T) {
 	}
 }
 
-func TestRepeatedToolCallStopsOnCancelledContext(t *testing.T) {
+func TestRepeatedToolCallReturnsNoFindingWhenCancelledBeforeAnyGroupCompletes(t *testing.T) {
 	session := sessionWithCallTurns(
 		[]model.ContextComponent{repeatedCallComponent("call-1")},
 		[]model.ContextComponent{repeatedCallComponent("call-2")},
@@ -275,11 +341,45 @@ func TestRepeatedToolCallStopsOnCancelledContext(t *testing.T) {
 	}
 }
 
-func TestRepeatedToolCallDoesNotExposeFingerprintOrHash(t *testing.T) {
-	component := repeatedCallComponent("call-1")
-	findings := analyzeRepeatedCalls(sessionWithCallTurns(
-		[]model.ContextComponent{component},
+// cancellingContext reports cancellation only after a fixed number of
+// Err calls, so a test can cancel between turns deterministically.
+type cancellingContext struct {
+	context.Context
+	remaining int
+}
+
+func (c *cancellingContext) Err() error {
+	if c.remaining <= 0 {
+		return context.Canceled
+	}
+	c.remaining--
+	return nil
+}
+
+func TestRepeatedToolCallKeepsGroupsCompletedBeforeCancellation(t *testing.T) {
+	session := sessionWithCallTurns(
+		[]model.ContextComponent{repeatedCallComponent("call-1")},
 		[]model.ContextComponent{repeatedCallComponent("call-2")},
+		[]model.ContextComponent{repeatedCallComponent("call-3")},
+	)
+	ctx := &cancellingContext{Context: context.Background(), remaining: 2}
+
+	findings := NewRepeatedToolCall().Analyze(ctx, session)
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v, want the group completed before cancellation", findings)
+	}
+	evidence := findings[0].Evidence
+	if len(evidence) != 2 || evidence[0].ToolCallID != "call-1" || evidence[1].ToolCallID != "call-2" {
+		t.Fatalf("evidence = %+v, want only the turns observed before cancellation", evidence)
+	}
+}
+
+func TestRepeatedToolCallFindingOmitsFingerprintAndContentHash(t *testing.T) {
+	first := repeatedCallComponent("call-1")
+	second := repeatedCallComponent("call-2")
+	findings := analyzeRepeatedCalls(sessionWithCallTurns(
+		[]model.ContextComponent{first},
+		[]model.ContextComponent{second},
 	))
 	if len(findings) != 1 {
 		t.Fatalf("findings = %+v, want one", findings)
@@ -288,10 +388,47 @@ func TestRepeatedToolCallDoesNotExposeFingerprintOrHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal finding: %v", err)
 	}
-	for _, secret := range []string{component.ToolCallFingerprint, component.ContentHash, "v1:", "sha256:", "fingerprint"} {
+	for _, secret := range []string{first.ToolCallFingerprint, first.ContentHash, "v1:", "sha256:", "fingerprint", "digest"} {
 		if strings.Contains(string(raw), secret) {
 			t.Fatalf("finding exposed %q: %s", secret, raw)
 		}
+	}
+}
+
+func TestRepeatedToolCallEvidenceKeepsMissingOutputBytesMissing(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentByte *int64
+		want        *int64
+	}{
+		{name: "unavailable", contentByte: nil, want: nil},
+		{name: "observed zero", contentByte: model.Int64(0), want: model.Int64(0)},
+		{name: "observed size", contentByte: model.Int64(4096), want: model.Int64(4096)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first := repeatedCallComponent("call-1")
+			first.ContentBytes = tt.contentByte
+			second := repeatedCallComponent("call-2")
+			second.ContentBytes = tt.contentByte
+
+			findings := analyzeRepeatedCalls(sessionWithCallTurns(
+				[]model.ContextComponent{first},
+				[]model.ContextComponent{second},
+			))
+			if len(findings) != 1 {
+				t.Fatalf("findings = %+v, want a finding even when the byte size is missing", findings)
+			}
+			for i, evidence := range findings[0].Evidence {
+				switch {
+				case tt.want == nil && evidence.OutputBytes != nil:
+					t.Fatalf("evidence[%d] output bytes = %d, want missing", i, *evidence.OutputBytes)
+				case tt.want != nil && (evidence.OutputBytes == nil || *evidence.OutputBytes != *tt.want):
+					t.Fatalf("evidence[%d] output bytes = %v, want %d", i, evidence.OutputBytes, *tt.want)
+				}
+			}
+		})
 	}
 }
 

@@ -57,8 +57,8 @@ func TestCustomToolOutputAboveThresholdProducesOversizedFinding(t *testing.T) {
 	if evidence.ToolCallID != "call-big" || evidence.ToolName != "exec" {
 		t.Fatalf("finding tool = %q/%q, want call-big/exec", evidence.ToolCallID, evidence.ToolName)
 	}
-	if evidence.OutputBytes <= ruletool.DefaultMaxOutputBytes {
-		t.Fatalf("finding bytes = %d, want a size above the threshold", evidence.OutputBytes)
+	if evidence.OutputBytes == nil || *evidence.OutputBytes <= ruletool.DefaultMaxOutputBytes {
+		t.Fatalf("finding bytes = %v, want a size above the threshold", evidence.OutputBytes)
 	}
 	if rendered := fmt.Sprintf("%+v", result); strings.Contains(rendered, secretToolOutput) {
 		t.Fatalf("analysis result retains raw tool output: %s", rendered)

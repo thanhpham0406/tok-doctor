@@ -61,12 +61,16 @@ func displayTool(name string) string {
 	return name
 }
 
-func formatBytes(value int64) string {
-	if value < 1024 {
-		return fmt.Sprintf("%d B", value)
+func formatBytes(value *int64) string {
+	if value == nil {
+		return "-"
 	}
-	if value < 1024*1024 {
-		return fmt.Sprintf("%.1f KiB", float64(value)/1024)
+	bytes := *value
+	if bytes < 1024 {
+		return fmt.Sprintf("%d B", bytes)
 	}
-	return fmt.Sprintf("%.1f MiB", float64(value)/(1024*1024))
+	if bytes < 1024*1024 {
+		return fmt.Sprintf("%.1f KiB", float64(bytes)/1024)
+	}
+	return fmt.Sprintf("%.1f MiB", float64(bytes)/(1024*1024))
 }

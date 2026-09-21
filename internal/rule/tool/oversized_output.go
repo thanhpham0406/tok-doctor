@@ -74,7 +74,7 @@ func oversizedOutputFinding(turn model.Turn, component model.ContextComponent) m
 			TurnSequence:    turn.Sequence,
 			ToolCallID:      component.ToolCallID,
 			ToolName:        component.ToolName,
-			OutputBytes:     bytes,
+			OutputBytes:     model.Int64(bytes),
 			EstimatedTokens: component.Measurement,
 			Completeness:    component.Completeness,
 		}},
