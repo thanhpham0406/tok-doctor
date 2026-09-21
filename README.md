@@ -8,19 +8,24 @@ TokDoctor helps you understand where your AI coding tokens go, detect unnecessar
 
 ## Features
 
-Current scaffold includes:
-
-* CLI application
-* terminal and JSON output
-* optional local Web UI
-* local-first architecture
-* foundation for AI agent adapters and diagnostic rules
-
-Initial platform targets:
+Supported sources:
 
 * Codex
 * Claude Code
-* 9Router
+
+Supported today:
+
+* **Source discovery** — `tok sources` reports each agent's status, and `tok source test <name>` verifies that one is usable
+* **Session usage** — `tok usage` and `tok sessions` report provider-authoritative token usage
+* **Cost estimation** — `tok cost` and `tok pricing` estimate API-equivalent cost from a local catalog, with no network access
+* **Coverage** — `tok coverage tool-output` reports how much tool output a source actually let TokDoctor observe
+* **Inspection and reconciliation** — `tok inspect` shows a session's per-turn usage, context attribution, and how gateway-captured requests compare against the session transcript
+* **Gateway capture** — `tok gateway` proxies local API traffic, records request metadata, and reports per-profile usage
+* **Diagnostic rules** — one rule is implemented and enabled: `TOOL001 oversized-tool-output`, which reports complete tool outputs above 64 KiB
+* **Terminal and JSON output** — every report command supports both, via `--format terminal|json`
+* **Local Web UI** — `tok doctor --ui` or `tok ui` serves a UI on `127.0.0.1`
+
+9Router is detected and probed, but it does not yet produce sessions or usage.
 
 ## Requirements
 
@@ -86,26 +91,24 @@ Check the version:
 ./bin/tok version
 ```
 
-Run the doctor command:
+List the sessions TokDoctor can read, then analyze one with the deterministic
+`TOOL001` oversized tool output rule:
 
 ```bash
-./bin/tok doctor
-```
-
-Analyze a recorded session with the deterministic `TOOL001` oversized tool
-output rule:
-
-```bash
+./bin/tok sessions
 ./bin/tok doctor <session-id>
 ```
 
 `TOOL001` reports complete tool outputs above 64 KiB. Byte size is observed
 from the local transcript; per-output token contribution remains an estimate.
 
+`tok doctor` without a session ID does not discover a session yet. It analyzes
+a placeholder and reports no findings, so pass a session ID for a real result.
+
 Get JSON output:
 
 ```bash
-./bin/tok doctor --format json
+./bin/tok doctor <session-id> --format json
 ```
 
 Inspect pricing catalog state and API-equivalent cost estimates:
@@ -120,6 +123,20 @@ Inspect pricing catalog state and API-equivalent cost estimates:
 ```
 
 `tok cost` never fetches pricing data from the network. Catalog precedence is local override, downloaded last-known-good catalog, embedded fallback, then unavailable. To use custom pricing, set `override_path` under `[pricing]` in the TokDoctor config to a local catalog JSON file.
+
+Inspect a session turn by turn, including how gateway-captured requests compare
+against the session transcript:
+
+```bash
+./bin/tok inspect <session-id>
+./bin/tok inspect <session-id> --all-turns --context
+```
+
+Report how much tool output a source let TokDoctor observe:
+
+```bash
+./bin/tok coverage tool-output --all
+```
 
 Open the local Web UI:
 
@@ -150,7 +167,7 @@ go run ./cmd/tok version
 ```
 
 ```bash
-go run ./cmd/tok doctor
+go run ./cmd/tok sessions
 ```
 
 This is useful while developing because you do not need to rebuild `bin/tok` manually after every change.
@@ -207,8 +224,14 @@ internal/
   source/              AI agent source adapters
   analyze/             Analysis orchestration
   rule/                Token and context diagnostic rules
-  token/               Token measurement and estimation
+  match/               Observation matching
+  reconcile/           Usage reconciliation across observations
+  coverage/            Tool output observability metrics
+  gateway/             Local HTTP capture and gateway observations
+  pricing/             Pricing catalog and cost estimation
   report/              Terminal and JSON presentation
+  app/                 Application use cases
+  cli/                 Cobra commands
   webui/               Local Web UI server
   config/              Configuration
 
@@ -220,11 +243,12 @@ docs/
   architecture.md
   adapter-spec.md
   rule-spec.md
+  reconciliation-observation.md
 ```
 
 ## Architecture
 
-TokDoctor keeps platform-specific collection separate from platform-independent analysis:
+TokDoctor keeps platform-specific collection separate from platform-independent analysis. Two pipelines run over the same canonical model:
 
 ```text
 Agent Data
@@ -235,19 +259,16 @@ Source Adapter
     v
 Canonical Model
     |
-    v
-Analyzer
+    +--> Analyzer --> Rule Engine --> Analysis Result --> Terminal
+    |                                                 --> JSON
+    |                                                 --> Web UI
     |
-    v
-Rule Engine
-    |
-    v
-Analysis Result
-    |
-    +--> Terminal
-    +--> JSON
-    +--> Web UI
+    +--> Observation Producer --> Matcher --> Reconciler --> Reconciliation
 ```
+
+The session pipeline produces findings. The observation pipeline compares
+independently observed usage from the gateway and from the session transcript.
+`tok inspect` runs the second; `tok doctor` runs the first.
 
 See [`docs/architecture.md`](docs/architecture.md) for details.
 
@@ -269,30 +290,17 @@ See [`SECURITY.md`](SECURITY.md) for the security model.
 
 ## Current Status
 
-TokDoctor is currently an initialized scaffold.
+The Codex and Claude vertical slices are complete: discovery, streaming parse,
+authoritative usage, normalization, context attribution, the `TOOL001` rule,
+and terminal, JSON, and Web UI rendering.
 
-The next development milestone is the first useful Codex vertical slice:
+Implemented but not yet finished:
 
-```text
-discover latest Codex session
-        |
-        v
-stream session JSONL
-        |
-        v
-extract authoritative token usage
-        |
-        v
-normalize relevant events
-        |
-        v
-identify large tool outputs
-        |
-        v
-render tok doctor findings
-```
-
-The current `tok doctor` command does not yet perform full token analysis.
+* `tok inspect` reconciles gateway capture against a session transcript, but it returns no analysis result, so it does not show findings
+* `tok doctor` runs the rules but does not reconcile
+* `tok doctor` without a session ID analyzes a placeholder session instead of discovering one
+* only one diagnostic rule is implemented; the other rule families are specified in [`docs/rule-spec.md`](docs/rule-spec.md) but not built
+* 9Router is detected and probed, but produces no sessions or usage
 
 ## Contributing
 

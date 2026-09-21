@@ -211,29 +211,44 @@ Do not:
 
 ### Comments
 
-Prefer self-explanatory code over comments.
+Do not write comments in production code.
 
-Comment only when intent, constraints, workarounds, protocol details, or non-obvious behavior cannot be expressed clearly through naming and code structure.
+Code must be self-explanatory through clear naming, small focused functions, explicit types, and well-defined responsibilities.
 
-Do not add comments that merely repeat what the code already says.
+Each function must make its purpose and role clear from its name, inputs, outputs, and structure without relying on comments for explanation.
 
-Avoid AI-style explanatory comments such as:
+If code requires a comment to explain what it does, refactor the code instead.
+
+Use descriptive names for functions, variables, types, constants, and abstractions so that intent is visible directly from the code.
+
+Extract non-obvious logic into well-named functions rather than explaining it with comments.
+
+Do not add:
+
+- Explanatory comments
+- Implementation comments
+- Step-by-step comments
+- AI-generated narration comments
+- TODO comments as substitutes for proper implementation
+- Comments that describe what a function, block, or statement does
+
+Prefer:
 
 ```go
-// Initialize the analyzer.
-// Loop through the findings.
-// Print the result.
+func calculateTurnUsage(current Usage, previous Usage) Usage {
+    return current.Subtract(previous)
+}
 ```
 
-A useful comment explains why something exists, not what an obvious statement does.
-
-Example:
+Instead of:
 
 ```go
 // Codex reports cumulative usage at the session level.
 // Subtract the previous snapshot to derive per-turn usage.
 delta := current.Total - previous.Total
 ```
+
+The code itself is the documentation for implementation behavior. If intent is unclear without a comment, improve the design, naming, or function boundaries until it is clear.
 
 ## Data and Token Accuracy
 

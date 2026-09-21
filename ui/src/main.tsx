@@ -11,14 +11,10 @@ type AnalysisResult = {
   findings: Array<unknown>;
 };
 
-const fallback: AnalysisResult = {
-  source: "codex",
-  summary: {
-    status: "ready",
-    message: "TokDoctor is initialized. No diagnostic rules are enabled in this scaffold.",
-  },
-  findings: [],
-};
+type LoadState =
+  | { state: "loading" }
+  | { state: "ready"; result: AnalysisResult }
+  | { state: "unavailable" };
 
 function App() {
   return (
@@ -30,21 +26,46 @@ function App() {
 }
 
 function ResultView() {
-  const [result, setResult] = useState<AnalysisResult>(fallback);
+  const [load, setLoad] = useState<LoadState>({ state: "loading" });
 
   useEffect(() => {
     fetch("/api/result")
-      .then((response) => response.json())
-      .then((data: AnalysisResult) => setResult(data))
-      .catch(() => setResult(fallback));
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`result request failed with status ${response.status}`);
+        }
+        return response.json();
+      })
+      .then((data: AnalysisResult) => setLoad({ state: "ready", result: data }))
+      .catch(() => setLoad({ state: "unavailable" }));
   }, []);
 
+  if (load.state === "loading") {
+    return (
+      <section>
+        <p>Waiting for the local analysis result.</p>
+      </section>
+    );
+  }
+
+  if (load.state === "unavailable") {
+    return (
+      <section>
+        <p>
+          Analysis result unavailable. The UI could not read /api/result from the
+          local TokDoctor server and has no data to show.
+        </p>
+      </section>
+    );
+  }
+
+  const { result } = load;
   return (
     <section>
       <p>{result.summary.message}</p>
       <dl>
         <dt>Source</dt>
-        <dd>{result.source}</dd>
+        <dd>{displaySource(result.source)}</dd>
         <dt>Status</dt>
         <dd>{result.summary.status}</dd>
         <dt>Findings</dt>
@@ -52,6 +73,10 @@ function ResultView() {
       </dl>
     </section>
   );
+}
+
+function displaySource(source: string) {
+  return source === "" ? "unknown" : source;
 }
 
 render(<App />, document.querySelector("#app")!);

@@ -6,7 +6,9 @@ One requirement shapes the whole design:
 
 > Platform-specific data collection must be isolated from platform-independent analysis.
 
-TokDoctor ships as a single binary, prefers the standard library, and keeps platform parsing at the edge. Components below are labeled `Current`, `Planned`, or `Future`. `Current` means code exists today. `Planned` means the direction is agreed but the code does not exist yet. `Future` is outside current scope.
+TokDoctor ships as a single binary, prefers the standard library, and keeps platform parsing at the edge. Components below are labeled `Current`, `Planned`, or `Future`. `Current` means code exists today; a qualifier such as `partial` or `incomplete` marks a component that works but does not yet do everything described for it. `Planned` means the direction is agreed but the code does not exist yet. `Future` is outside current scope.
+
+When this document and the code disagree, the code and its tests are the source of truth.
 
 ## Goals and Non-Goals
 
@@ -44,12 +46,11 @@ flowchart TD
     Rules --> Analysis[Analysis result]
 
     Adapter --> Observation[Canonical Observation]
-    Observation --> Catalog[Observation catalog - planned]
-    Catalog --> Matcher[Matcher - planned]
-    Matcher --> Reconciler[Reconciler - planned]
+    Observation --> Matcher[Matcher]
+    Matcher --> Reconciler[Reconciler]
     Reconciler --> Reconciliation[Reconciliation result]
 
-    Analysis --> Inspect[Inspect core - planned]
+    Analysis --> Inspect[Inspect core]
     Reconciliation --> Inspect
 
     Inspect --> Terminal[Terminal]
@@ -57,7 +58,15 @@ flowchart TD
     Inspect --> WebUI[Local Web UI]
 ```
 
-`Current`: the canonical `Session` and `Observation` models, the analyzer, the observation producers, and the presentation layers. `Planned`: the observation catalog, matcher, reconciler, and the unified inspect core. Today `tok inspect <session-id>` resolves a session only; it does not yet query observations or reconciliation.
+Both pipelines are implemented and reachable from the CLI, but through different commands.
+
+`tok doctor` runs the session pipeline: it normalizes a session and renders an analysis result with findings.
+
+`tok inspect <session-id>` runs the observation pipeline: it resolves the session, projects its transcript observations, gathers gateway observations for the session's time window, matches them, and reports reconciliation. When gateway capture is unavailable, it says so instead of reporting an empty result.
+
+Neither command does both. `tok inspect` runs no diagnostic rule, and `tok doctor` does not reconcile. No result type yet carries an analysis result and a reconciliation result together; that is what the inspect core is meant to become.
+
+There is no separate observation catalog component. Observations are produced on demand and passed directly to the matcher; nothing persists them or queries them by source, channel, scope, or time.
 
 ## Platform Sources and Observation Channels
 
@@ -65,8 +74,8 @@ flowchart TD
 
 | Source | Kind | Current state |
 | --- | --- | --- |
-| Codex | local session files | session and turn normalization; observation producer |
-| Claude Code | local session files | session and turn normalization; not an observation producer |
+| Codex | local session files | session and turn normalization; session transcript observation producer |
+| Claude Code | local session files | session and turn normalization; session transcript observation producer |
 | 9Router | local endpoint | detection and endpoint probe only |
 | TokDoctor Gateway | local HTTP capture | request capture; gateway observation producer |
 
@@ -84,7 +93,7 @@ A **channel** describes how data was observed, not what it represents. There are
 
 A **scope** describes what level an observation represents: `request`, `turn`, or `session`.
 
-Channel and scope are independent. An adapter does not have to produce all channels. A workflow may collect one, two, or three channels depending on what the data actually provides. A missing channel is reported as unavailable or missing through coverage. It is never fabricated and never converted into an explicit zero.
+Channel and scope are independent. An adapter does not have to produce all channels. A workflow may collect one, two, or three channels depending on what the data actually provides. A missing channel is reported as unavailable with a reason, never fabricated and never converted into an explicit zero. `tok coverage` does not report channel presence; it measures tool output observability.
 
 ### Ideal request path
 
@@ -100,7 +109,9 @@ flowchart LR
     GatewayObservation --> Observations
 ```
 
-The runtime produces agent telemetry and a session transcript. The gateway produces a gateway observation. All three are independent observations of the same activity and may later be matched.
+The runtime produces agent telemetry and a session transcript. The gateway produces a gateway observation. All three are independent observations of the same activity.
+
+Only two of the three are implemented today: the gateway request and the session transcript turn, which `tok inspect` matches and reconciles. Agent telemetry has no producer, so a session recorded only through telemetry has no TokDoctor observation.
 
 ## Dependency Direction
 
@@ -150,8 +161,11 @@ Current producers:
 | --- | --- | --- |
 | `gateway.ObservationFromExchange` | gateway exchange record | request-scope `gateway` observation |
 | `codex.ObservationsFromSession` | canonical codex session | session-scope and turn-scope `session_transcript` observations |
+| `claude.ObservationsFromSession` | canonical claude session | session-scope and turn-scope `session_transcript` observations |
 
-Both producers are implemented and tested, but are not yet wired into a catalog or a CLI path. Claude and 9Router have no observation producer yet.
+All three are implemented and tested, and the inspect core calls them: `tok inspect` projects transcript observations for a Codex or Claude session and reads gateway observations from local capture before matching and reconciling them.
+
+9Router has no observation producer. The `agent_telemetry` channel is defined in the canonical contract but no producer emits it yet.
 
 Do not create one large interface that every adapter must implement for every capability. Keep interfaces small and define them near the consumer. The adapter contract is described further in [`adapter-spec.md`](adapter-spec.md).
 
@@ -165,12 +179,15 @@ The canonical model is the platform-independent representation of agent activity
 | `Turn` | per-turn slice of a session |
 | `Invocation` | a model invocation within a session |
 | `ContextComponent` | attributed piece of request context |
+| `ContextAttribution` | per-turn composition of context components |
+| `ContextReconciliation` | per-turn check that accounted input matches authoritative usage |
 | `Usage` | token usage block |
 | `Measurement` | a value plus its measurement kind |
 | `Observation` | one measurement from one channel and scope |
 | `ObservationIdentity` | correlation identity for an observation |
 | `Finding` | diagnostic produced by a rule |
 | `Evidence` | audit-safe reference to the origin of a value |
+| `FindingEvidence` | audit-safe description of the observed item behind a finding |
 
 Key rules:
 
@@ -178,47 +195,63 @@ Key rules:
 - An observation ID is a record identifier, not a correlation ID.
 - Correlation identity lives in `ObservationIdentity`, and each field is its own namespace.
 - Identity is never invented from a timestamp, model name, or token total.
-- `model.Finding` is currently a scaffold (`RuleID`, `Title`). Severity, confidence, impact, and recommendation are `Planned` per [`rule-spec.md`](rule-spec.md).
+- `model.Finding` carries `RuleID`, `Name`, `Severity`, `Confidence`, `Title`, `Description`, an estimated-token `Measurement`, `FindingEvidence`, and a recommendation. Only the severity and confidence values that a shipped rule actually emits are defined today: `SeverityMedium`, `SeverityHigh`, and `ConfidenceHigh`.
+- `model.FindingEvidence` describes the observed item — turn, tool call, output bytes, completeness — without exposing tool output content, hashes, paths, prompts, or raw source records.
 
 The canonical model must not contain source-specific record types. The normative, field-level observation contract is [`reconciliation-observation.md`](reconciliation-observation.md); this document does not restate it.
 
-### 3. Observation Catalog (Planned)
+### 3. Observation Collection (Current, inline)
 
-The catalog will collect and query canonical observations. It filters by source, channel, scope, and time. It does not match or reconcile on its own.
+There is no observation catalog package. The application layer gathers observations for one inspection: it calls the transcript producer for the session's source, reads gateway capture for the profiles bound to that source, keeps only exchanges inside the session's time window, and passes the combined slice to the matcher.
 
-### 4. Matcher (Planned)
+Nothing is persisted, indexed, or queried by source, channel, scope, or time. Each inspection re-reads the sources it needs. A catalog that filters and caches observations across sessions does not exist; when it does, it must not match or reconcile on its own.
 
-The matcher groups observations that describe the same underlying activity. It prefers explicit identity, may use time and model as weak evidence, and never compares usage. It does not decide authority. Matching logic must not live in `internal/model`.
+### 4. Matcher (Current)
 
-### 5. Reconciler (Planned)
+The matcher groups observations that describe the same underlying activity. It lives in `internal/match`, compares only gateway request observations against session transcript turn observations, prefers explicit identity, and falls back to a time window (`match.DefaultTimeWindow`, two minutes) combined with model compatibility and usage similarity. Each side records its own best preference, and a match is reported only when both sides choose each other; otherwise the result is `ambiguous` or `unmatched`. A gateway observation that matches nothing is still reported. The matcher never decides authority.
 
-The reconciler compares only observations already matched by the matcher. It never compares incompatible scopes, keeps missing distinct from explicit zero, and never presents an estimate as a provider measurement. It returns channel coverage, comparable fields, deltas, and conflicts. Observations that share the same underlying source record are not treated as independent confirmation.
+Matching logic does not live in `internal/model`. Session-scope transcript observations are produced but not matched, because there is no request-level counterpart to compare them against.
+
+### 5. Reconciler (Current)
+
+The reconciler lives in `internal/reconcile` and compares only observations already matched by the matcher. It rejects a pair that is not `matched`, that carries candidate IDs, that puts the same observation on both sides, or whose sides are not a gateway request and a transcript turn. Missing values stay missing and are reported as unavailable rather than as zero. It compares seven usage fields — fresh input, cached input, cache-creation input, total input, output, reasoning output, and total — and reports per-field deltas plus an overall status of `equal`, `different`, or `unavailable`.
+
+`reconcile.BuildReport` wraps matching and reconciliation into one report with a summary of gateway requests, transcript turns, matched, equal, different, unavailable, ambiguous, and unmatched counts. Dependency lineage between observations is not yet tracked, so two observations of the same underlying record are not detected as dependent.
 
 ```mermaid
 flowchart LR
-    Producer[Observation producer] --> Catalog[Observation catalog]
-    Catalog --> Matcher[Matcher]
+    Producer[Observation producer] --> Collect[Observation collection]
+    Collect --> Matcher[Matcher]
     Matcher --> Reconciler[Reconciler]
     Reconciler --> Result[Reconciliation result]
 ```
 
 ### 6. Analyzer (Current)
 
-The analyzer orchestrates platform-independent session analysis. It receives normalized sessions, derives metrics, prepares rule input, executes rules, aggregates findings, and produces an `analyze.Result`. It does not read platform files, parse source payloads, mutate session data, or render output.
+The analyzer orchestrates platform-independent session analysis. It receives one normalized session, runs every rule it holds against that session, collects the findings, and produces an `analyze.Result` with the session, the findings, and a summary status of `healthy` or `findings`. It does not read platform files, parse source payloads, mutate session data, or render output.
+
+Rules receive the canonical `model.Session` directly. There is no intermediate derived analysis context yet.
 
 The analyzer is the session pipeline. It is not the reconciliation pipeline.
 
-### 7. Rule Engine (Current scaffold)
+### 7. Rule Engine (Current)
 
-Rules detect token and context problems from canonical data. The registry is currently a scaffold with no diagnostic rules enabled.
+Rules detect token and context problems from canonical data. The analyzer holds an explicit rule list and runs every rule it holds.
 
-Rule families:
+One diagnostic rule is implemented and enabled by default:
+
+| Rule | Name | Detects |
+| --- | --- | --- |
+| `TOOL001` | `oversized-tool-output` | a complete tool result above 64 KiB in a turn's context attribution |
+
+`TOOL001` reports byte size as observed from the transcript. Its token contribution stays an estimate and is reported as such; the rule never presents it as provider-reported usage. It skips truncated or unavailable tool results, because only a complete result has a trustworthy size.
+
+The remaining rule families are specified in [`rule-spec.md`](rule-spec.md) and are not implemented:
 
 ```text
 MCP001   unused-mcp
 MCP002   oversized-mcp-schema
 
-TOOL001  oversized-tool-output
 TOOL002  repeated-tool-call
 TOOL003  repeated-file-read
 
@@ -238,16 +271,17 @@ Rules must not:
 
 Reconciliation is not a rule, and an `Observation` is not forced into a `Session`.
 
-### 8. Inspect Core (Planned)
+### 8. Inspect Core (Current, partial)
 
-`inspect` is the unified application use case, not just a CLI renderer. Its conceptual result may include:
+`inspect` is the application use case behind session inspection, not just a CLI renderer. `app.InspectReport` resolves one session and returns:
 
-- selected entity: session, turn, or request
-- analysis result
-- observations
-- matched group
-- reconciliation result
-- evidence
+- the canonical session, with usage, turns, context attribution, and evidence
+- per-turn context reconciliation (`model.ReconcileContext`)
+- the reconciliation report, when gateway capture for the session's source is available
+- per-turn reconciliation status (`matched`, `ambiguous`, `unmatched`)
+- an unavailable reason when reconciliation cannot run
+
+It does not yet return an analysis result: `inspect` and `doctor` remain separate use cases, and no result type carries both. It also does not select a turn or a request as a first-class entity — the CLI filters turns at render time, and requests are reached only through the matched gateway observation.
 
 Interactive selection belongs to the CLI or presentation layer. Discovery, lookup, matching, and reconciliation belong to the application and core.
 
@@ -255,7 +289,7 @@ Interactive selection belongs to the CLI or presentation layer. Discovery, looku
 
 Presentation layers are terminal, JSON, and the local Web UI. They may format, group, sort, and serialize results. They must not calculate waste, parse session files, execute source logic, perform matching or reconciliation, or redefine rule behavior.
 
-All presentation layers consume the same result produced by the core. The local Web UI binds to `127.0.0.1` by default and stays usable only as a presentation layer.
+For `tok doctor` all three render the same `analyze.Result`: `report/terminal`, `report/json`, and the Web UI's `/api/result`. Other commands have their own result types and either one or two renderers. The local Web UI binds to `127.0.0.1` by default and stays usable only as a presentation layer.
 
 ## Token Accuracy Model
 
@@ -277,15 +311,9 @@ A `derived` measurement may be trustworthy, but it is never called provider-meas
 
 ### Confidence (finding and inference)
 
-Confidence describes how certain TokDoctor is about a diagnosis, independently of how a value was produced:
+Confidence describes how certain TokDoctor is about a diagnosis, independently of how a value was produced. [`rule-spec.md`](rule-spec.md) defines `high`, `medium`, and `low` for rules.
 
-```text
-high
-medium
-low
-```
-
-The current `model.Finding` does not yet carry a confidence field; this axis is defined for rules per [`rule-spec.md`](rule-spec.md).
+`model.Confidence` currently defines only `high`, the value `TOOL001` reports, because byte size above a threshold is observed directly rather than inferred. The matcher uses its own confidence scale (`high` for shared identity, `medium` for a heuristic match).
 
 Provider-reported usage takes precedence over local estimation. TokDoctor must never present estimated attribution as exact provider usage.
 
@@ -305,6 +333,10 @@ flowchart TD
     Projector --> Observations[Session and turn observations]
 ```
 
+### Claude Code
+
+Claude follows the same shape as Codex: `tok doctor` and `tok inspect` read `model.Session` through the Claude adapter, and `claude.ObservationsFromSession` projects session-scope and turn-scope transcript observations for reconciliation.
+
 ### TokDoctor Gateway
 
 The gateway records request metadata to a local append-only capture, then a producer projects a request-scope observation.
@@ -322,7 +354,7 @@ Current code detects and probes the 9Router endpoint only. It does not produce a
 
 ## Correlation: Produce, Match, Reconcile
 
-Correlation is not merely a future idea. Observation identity and reconciliation are active architecture work.
+Correlation is implemented: the matcher and reconciler run inside `tok inspect`. Two observations must be matched before they are compared, and neither side is treated as authoritative.
 
 ```mermaid
 flowchart LR
@@ -337,8 +369,12 @@ Required invariants:
 - explicit identity is stronger than temporal proximity
 - a request-scope observation is never compared directly to a session-scope aggregate
 - an unmatched observation is still valid
-- a missing channel is reported through coverage, not invented
+- a missing channel is reported as unavailable with a reason, never invented and never converted to zero
 - observations with dependent lineage are not independent cross-confirmation
+
+Most of these hold today. Identity fields are separate typed fields compared only against the same field, so they cannot be copied between namespaces. The matcher tries identity before heuristics. An unmatched observation is still returned and still reported. The reconciler rejects any pair that is not a gateway request against a transcript turn, and it leaves a missing value unavailable instead of turning it into zero. Missing gateway capture is reported as unavailable with a reason.
+
+Dependent lineage is the exception: it is specified but not detected, so two observations of the same underlying source record would currently be reconciled as if each confirmed the other.
 
 ## Streaming and Large Files
 
@@ -366,7 +402,7 @@ No database is required for current analysis.
 flowchart LR
     Traffic[Gateway traffic] --> Capture[Local capture JSONL]
     Capture --> Producer[Gateway observation producer]
-    Producer --> Catalog[Observation catalog - planned]
+    Producer --> Matcher[Matcher]
 ```
 
 Storage rules:
@@ -401,40 +437,17 @@ Architecture boundaries are protected by tests. This section states the strategy
 
 Fixture-based tests cover detection, session discovery, parsing, normalization, unknown events, malformed required records, and relevant edge cases. Fixtures must be synthetic or sanitized.
 
-### Producer tests (Planned to extend)
+### Producer tests (Current, incomplete)
 
-Producer tests should cover:
+Producer tests cover valid projection, missing versus explicit zero, outcome and completeness, deterministic behavior, privacy, and malformed input. They do not yet cover dependent lineage, because the model does not track it.
 
-- valid projection
-- missing versus explicit zero
-- identity namespace separation
-- outcome and completeness
-- deterministic behavior
-- privacy (no raw payloads)
-- duplicate and conflict behavior
-- malformed or truncated input
+### Matcher tests (Current)
 
-### Matcher tests (Planned)
+Matcher tests cover exact identity, conflicting identity, ambiguous matches, weak temporal matches, unmatched observations, and deterministic ordering.
 
-Matcher tests should cover:
+### Reconciler tests (Current, incomplete)
 
-- exact identity
-- conflicting identity
-- ambiguous match
-- weak temporal match
-- unmatched observation
-- incompatible scopes
-
-### Reconciler tests (Planned)
-
-Reconciler tests should cover:
-
-- 3/3, 2/3, and 1/3 channel coverage
-- measured versus derived or estimated
-- missing versus explicit zero
-- field deltas
-- dependent lineage
-- incompatible scopes
+Reconciler tests cover missing versus explicit zero, measured versus derived values, field deltas, incompatible scopes, and per-field status. They do not cover dependent lineage, which the model does not track.
 
 ### Rule and integration tests (Current)
 
@@ -448,15 +461,19 @@ Current organization:
 tokdoctor/
 ├── cmd/tok/main.go
 ├── internal/
-│   ├── analyze/
-│   ├── app/
-│   ├── cli/
-│   ├── config/
-│   ├── gateway/
-│   ├── model/
-│   ├── pricing/
-│   ├── report/
+│   ├── analyze/          analysis orchestration and the rule list
+│   ├── app/              use cases; owns observation collection
+│   ├── cli/              cobra commands and input selection
+│   ├── config/           configuration
+│   ├── coverage/         tool output observability metrics
+│   ├── gateway/          capture, proxies, chains, observations
+│   ├── match/            observation matching
+│   ├── model/            canonical model, no platform types
+│   ├── pricing/          catalog, cost estimation
+│   ├── reconcile/        field comparison and reconciliation report
+│   ├── report/           presentation
 │   │   ├── cost/
+│   │   ├── coverage/
 │   │   ├── inspect/
 │   │   ├── json/
 │   │   ├── pricing/
@@ -464,18 +481,20 @@ tokdoctor/
 │   │   ├── source/
 │   │   ├── terminal/
 │   │   └── usage/
+│   ├── rule/
+│   │   └── tool/         TOOL001
 │   ├── source/
-│   │   ├── catalog/
+│   │   ├── catalog/      detector registry, not an observation catalog
 │   │   ├── claude/
 │   │   ├── codex/
 │   │   └── router9/
-│   └── webui/
+│   └── webui/            HTTP handler and embedded static assets
 ├── ui/
 ├── fixtures/
 └── docs/
 ```
 
-Catalog, matcher, and reconciler logic will live in dedicated packages close to the domain when implemented. Matcher and reconciler logic must not live in `internal/model`. Do not create packages purely to match a diagram; a package should own meaningful behavior.
+Matcher and reconciler logic live in `internal/match` and `internal/reconcile`. They must not live in `internal/model`. Do not create packages purely to match a diagram; a package should own meaningful behavior. `internal/source/catalog` is a registry of source detectors; it is unrelated to the observation catalog described above.
 
 ## Go Design Principles
 
@@ -493,21 +512,21 @@ Catalog, matcher, and reconciler logic will live in dedicated packages close to 
 TokDoctor is CLI-first. Current commands include:
 
 ```bash
-tok doctor
-tok doctor --ui
+tok version
+tok doctor [session-id] [--format terminal|json] [--ui]
 tok ui
-tok usage
-tok sessions
-tok inspect <session-id>
-tok cost
-tok pricing
+tok usage --source <name> | --all [--format terminal|json]
+tok sessions [--source <name>] [--format terminal|json]
+tok inspect [session-id] [--turn <n>] [--all-turns] [--context] [--evidence] [--format terminal|json]
+tok coverage tool-output [session-id] | --source <name> | --all [--format terminal|json]
+tok cost [session-id] | --all | --provider <name> [--format terminal|json]
+tok pricing status|update|list|show|missing|add
 tok sources
-tok gateway start
-tok gateway requests --profile <name>
-tok gateway inspect --profile <name> <exchange-id>
-tok gateway chains --profile <name>
-tok gateway report --profile <name>
+tok source show|set|reset|test <name>
+tok gateway start|status|stop|setup|remove|requests|inspect|chains|chain|report
 ```
+
+`tok inspect` and `tok doctor` behave differently when no session ID is given. `tok inspect` lists sessions and prompts for one. `tok doctor` analyzes a placeholder Codex session rather than discovering the latest one, so it reports no findings.
 
 `tok gateway requests` and `tok gateway inspect` are transitional surfaces. They are not declared deprecated and have no scheduled removal.
 
@@ -533,11 +552,13 @@ tok inspect --request <id>
 tok inspect --format json
 ```
 
-This is a `Planned` direction. Current `tok inspect` accepts a positional session ID only and does not support `--session`, `--turn`, `--request`, or observation reconciliation.
+This is the `Planned` direction. Current `tok inspect` accepts a positional session ID only and does not support `--session`, `--turn`, or `--request`. Reconciliation already runs inside `tok inspect`; what remains is unifying it with the analysis result and addressing a turn or a request directly.
 
 ### Web UI
 
-The Web UI is an optional local presentation layer built on the same core result as the terminal and JSON output. It must not duplicate analysis logic. The UI may be embedded into the Go binary with `//go:embed` to preserve single-binary distribution.
+The Web UI is an optional local presentation layer. It reads the `tok doctor` analysis result from `/api/result` and renders it; it must not duplicate analysis logic. Other commands have no Web UI view, so inspection and reconciliation are terminal and JSON only. The UI is embedded into the Go binary with `//go:embed` to preserve single-binary distribution. `tok ui` and `tok doctor --ui` compute one analysis result and serve it from `/api/result` for the lifetime of the process.
+
+When the API cannot be read, the UI reports that the result is unavailable. It never substitutes a placeholder analysis result, and it never assumes a source.
 
 ## Initial Vertical Slice
 
@@ -571,19 +592,26 @@ This history is kept for context.
 
 `Current`:
 
-- gateway request capture and gateway observation producer
-- Codex session transcript observation producer
-- canonical session model, analyzer, and presentation layers
-- per-turn context attribution and context reconciliation for Claude sessions (distinct from the planned observation reconciler)
+- Codex and Claude source adapters: discovery, session and turn normalization, authoritative usage
+- canonical session and observation models
+- analyzer with one implemented rule, `TOOL001 oversized-tool-output`
+- per-turn context attribution and context reconciliation
+- observation producers for Codex, Claude, and the gateway
+- matcher and reconciler, reachable through `tok inspect`
+- tool output coverage measurement
+- pricing catalog and API-equivalent cost estimation
+- gateway capture, profiles, chains, and profile accounting
+- terminal, JSON, and local Web UI presentation
 
-`Planned`:
+Partial or missing:
 
-- observation catalog
-- matcher
-- reconciler
-- session transcript producers for Claude
-- agent telemetry producers
-- unified inspect spanning analysis, observations, and reconciliation
+- `tok inspect` reconciles but does not return an analysis result, and `tok doctor` analyzes but does not reconcile
+- `tok doctor` without a session ID analyzes a placeholder session instead of discovering one
+- only one diagnostic rule is implemented; the rest of the rule families in [`rule-spec.md`](rule-spec.md) are unimplemented
+- 9Router is detection and endpoint probe only
+- no agent telemetry producer
+- no dependent-lineage tracking between observations
+- no observation catalog, persistence, or history
 
 Do not build all adapters, persistent storage, auto-fix, cloud features, or historical comparison before the core proves useful.
 
