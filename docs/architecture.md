@@ -10,6 +10,10 @@ TokDoctor ships as a single binary, prefers the standard library, and keeps plat
 
 When this document and the code disagree, the code and its tests are the source of truth.
 
+Product phases, priorities, and completion criteria live in the
+[roadmap](roadmap.md). This document describes architecture rather than owning a
+second roadmap.
+
 ## Goals and Non-Goals
 
 Goals:
@@ -243,11 +247,13 @@ Two diagnostic rules are implemented and enabled by default:
 | Rule | Name | Detects |
 | --- | --- | --- |
 | `TOOL001` | `oversized-tool-output` | a complete tool result above 64 KiB in a turn's context attribution |
-| `TOOL002` | `repeated-tool-call` | a tool that appears to have been called more than once with the same normalized arguments and the same complete result content |
+| `TOOL002` | `repeated-tool-call` | a tool that appears to have been called more than once with the same arguments and the same complete result content |
 
 `TOOL001` reports byte size as observed from the transcript. Its token contribution stays an estimate and is reported as such; the rule never presents it as provider-reported usage. It skips truncated or unavailable tool results, because only a complete result has a trustworthy size.
 
 `TOOL002` matches on the tool name, a tool call fingerprint, and the result content hash together, and only when the source declared a distinct non-empty tool call ID for each occurrence. Adapters build the fingerprint from the arguments the source declared for a call and attach it to the linked result; the rule never parses source formats and never sees raw arguments. Because a repeat can be legitimate, the finding says the tool *appears* to have been called repeatedly and reports only the repeats after the first as an estimated token impact. The fingerprint is internal and is never serialized, rendered, or logged.
+
+A fingerprint belongs to one of two domains. Structured arguments use canonical JSON fingerprints (`v1:`), which order object keys deterministically and preserve array order. Freeform tool input uses exact-text fingerprints (`v1-text:`), which hash the declared input byte for byte without parsing it as JSON. The domains carry the marker inside the hashed payload as well as in the prefix, so a structured call and a freeform call can never collide, even when their visible characters match. An adapter picks the domain from the meaning its own format gives a field: Codex reads `arguments` on a `function_call` as structured JSON, and reads a string `input` on a `custom_tool_call` as freeform text while an inlined object or array still goes through the structured path. V1 performs no semantic normalization of commands, paths, patches, or JavaScript source.
 
 The remaining rule families are specified in [`rule-spec.md`](rule-spec.md) and are not implemented:
 
@@ -315,7 +321,7 @@ A `derived` measurement may be trustworthy, but it is never called provider-meas
 
 Confidence describes how certain TokDoctor is about a diagnosis, independently of how a value was produced. [`rule-spec.md`](rule-spec.md) defines `high`, `medium`, and `low` for rules.
 
-`model.Confidence` currently defines only `high`, the value both implemented rules report, because they act on directly observed transcript data: a byte size above a threshold, and a repeated call the source itself declared with distinct call IDs and identical normalized arguments and result content. The matcher uses its own confidence scale (`high` for shared identity, `medium` for a heuristic match).
+`model.Confidence` currently defines only `high`, the value both implemented rules report, because they act on directly observed transcript data: a byte size above a threshold, and a repeated call the source itself declared with distinct call IDs and identical arguments and result content. The matcher uses its own confidence scale (`high` for shared identity, `medium` for a heuristic match).
 
 Provider-reported usage takes precedence over local estimation. TokDoctor must never present estimated attribution as exact provider usage.
 

@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -62,6 +63,93 @@ func TestCustomToolOutputAboveThresholdProducesOversizedFinding(t *testing.T) {
 	}
 	if rendered := fmt.Sprintf("%+v", result); strings.Contains(rendered, secretToolOutput) {
 		t.Fatalf("analysis result retains raw tool output: %s", rendered)
+	}
+}
+
+// A sanitized transcript in the real Codex Desktop shape must reach TOOL002
+// through the parser, the canonical model, and the analyzer, without the rule
+// learning anything Codex-specific.
+func TestRepeatedFreeformCustomToolCallProducesFinding(t *testing.T) {
+	session := canonicalSession(t, fixturePath(t, "repeated-custom-tool-call-session.jsonl"), "sess-custom-repeat")
+
+	result := analyze.New().Analyze(context.Background(), session)
+	if len(result.Findings) != 1 {
+		t.Fatalf("findings = %d (%+v), want one repeated tool call", len(result.Findings), result.Findings)
+	}
+	finding := result.Findings[0]
+	if finding.RuleID != ruletool.RepeatedToolCallRuleID {
+		t.Fatalf("rule = %q, want %q", finding.RuleID, ruletool.RepeatedToolCallRuleID)
+	}
+	if finding.Severity != model.SeverityMedium || finding.Confidence != model.ConfidenceHigh {
+		t.Fatalf("severity/confidence = %s/%s, want medium/high", finding.Severity, finding.Confidence)
+	}
+	if len(finding.Evidence) != 2 {
+		t.Fatalf("evidence = %+v, want both occurrences", finding.Evidence)
+	}
+	callIDs := map[string]struct{}{}
+	for _, evidence := range finding.Evidence {
+		if evidence.ToolName != "exec" {
+			t.Fatalf("evidence = %+v, want the custom tool name", evidence)
+		}
+		callIDs[evidence.ToolCallID] = struct{}{}
+	}
+	if _, ok := callIDs["call-1"]; !ok {
+		t.Fatalf("evidence call IDs = %+v, want call-1", callIDs)
+	}
+	if _, ok := callIDs["call-2"]; !ok {
+		t.Fatalf("evidence call IDs = %+v, want call-2", callIDs)
+	}
+
+	// The baseline is not avoidable, so only the repeat counts towards the
+	// estimated repeated output.
+	if estimated := finding.EstimatedTokens; estimated.Kind != model.MeasurementEstimated || estimated.ValueOrZero() != 7 {
+		t.Fatalf("estimated tokens = %+v, want the repeated result only", estimated)
+	}
+
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	for _, secret := range []string{"exec_command", "synthetic repeated output", "v1-text:"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("analysis result exposes %q: %s", secret, raw)
+		}
+	}
+
+	rendered, err := json.Marshal(finding)
+	if err != nil {
+		t.Fatalf("marshal finding: %v", err)
+	}
+	for _, secret := range []string{"exec_command", "synthetic repeated output", "sha256:", "v1:", "v1-text:", "fingerprint", "contentHash"} {
+		if strings.Contains(string(rendered), secret) {
+			t.Fatalf("finding exposes %q: %s", secret, rendered)
+		}
+	}
+}
+
+func TestDifferingFreeformCustomToolCallInputProducesNoFinding(t *testing.T) {
+	session := canonicalSession(t, fixturePath(t, "differing-custom-tool-call-session.jsonl"), "sess-custom-differing")
+
+	result := analyze.New().Analyze(context.Background(), session)
+	if len(result.Findings) != 0 {
+		t.Fatalf("findings = %+v, want none when the freeform inputs differ", result.Findings)
+	}
+}
+
+func TestRepeatedFreeformCustomToolCallWithDifferentOutputProducesNoFinding(t *testing.T) {
+	path := writeSessionLines(t, []string{
+		customToolCallLine(t, "call-1", "exec", freeformExecInput),
+		customToolCallOutputLine(t, "call-1", customTextOutput("first output")),
+		tokenCountLine(t, 900, 100, 200, 1200),
+		customToolCallLine(t, "call-2", "exec", freeformExecInput),
+		customToolCallOutputLine(t, "call-2", customTextOutput("second output")),
+		tokenCountLine(t, 1000, 100, 200, 1300),
+	})
+	session := canonicalSession(t, path, "sess-custom-outputs")
+
+	result := analyze.New().Analyze(context.Background(), session)
+	if len(result.Findings) != 0 {
+		t.Fatalf("findings = %+v, want none when the complete outputs differ", result.Findings)
 	}
 }
 

@@ -282,7 +282,7 @@ func (c *contextBuilder) registerToolUses(raw json.RawMessage) {
 		if block.Type == "tool_use" && block.ID != "" && block.Name != "" {
 			c.toolUses[block.ID] = toolUseIdentity{
 				name:        block.Name,
-				fingerprint: source.ToolCallFingerprintOrEmpty(block.Name, block.Input),
+				fingerprint: source.StructuredToolCallFingerprintOrEmpty(block.Name, block.Input),
 			}
 		}
 	}

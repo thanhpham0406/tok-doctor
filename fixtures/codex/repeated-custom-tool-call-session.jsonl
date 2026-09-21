@@ -1,0 +1,9 @@
+{"type":"session_meta","payload":{"id":"sess-custom-repeat"}}
+{"type":"turn_context","payload":{"model":"gpt-5"}}
+{"type":"response_item","payload":{"type":"message","id":"msg-user","role":"user","content":[{"type":"input_text","text":"Inspect the fixture."}]}}
+{"type":"response_item","payload":{"type":"custom_tool_call","id":"call-1-custom","call_id":"call-1","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"echo synthetic\"}); text(r.output);","status":"completed"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","id":"call-1-custom-out","call_id":"call-1","output":[{"type":"input_text","text":"synthetic repeated output"}]}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":100,"output_tokens":200,"reasoning_output_tokens":0,"total_tokens":1200},"last_token_usage":{"input_tokens":900,"cached_input_tokens":100,"output_tokens":200,"reasoning_output_tokens":0,"total_tokens":1200}}}}
+{"type":"response_item","payload":{"type":"custom_tool_call","id":"call-2-custom","call_id":"call-2","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"echo synthetic\"}); text(r.output);","status":"completed"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","id":"call-2-custom-out","call_id":"call-2","output":[{"type":"input_text","text":"synthetic repeated output"}]}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":200,"reasoning_output_tokens":0,"total_tokens":1300},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":100}}}}

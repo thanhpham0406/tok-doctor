@@ -77,7 +77,10 @@ func functionCallOutputLine(t *testing.T, callID string, output any) string {
 	})
 }
 
-func customToolCallLine(t *testing.T, callID, name, input string) string {
+// customToolCallLine writes a custom tool call whose input is whatever the
+// caller passes: a string is encoded as freeform text, and anything else is
+// encoded as the inline JSON the source declared.
+func customToolCallLine(t *testing.T, callID, name string, input any) string {
 	t.Helper()
 	return jsonLine(t, map[string]any{
 		"type": "response_item",
@@ -87,6 +90,22 @@ func customToolCallLine(t *testing.T, callID, name, input string) string {
 			"call_id": callID,
 			"name":    name,
 			"input":   input,
+			"status":  "completed",
+		},
+	})
+}
+
+// customToolCallWithoutInputLine writes a custom tool call that declares no
+// input field at all.
+func customToolCallWithoutInputLine(t *testing.T, callID, name string) string {
+	t.Helper()
+	return jsonLine(t, map[string]any{
+		"type": "response_item",
+		"payload": map[string]any{
+			"type":    "custom_tool_call",
+			"id":      callID + "-custom",
+			"call_id": callID,
+			"name":    name,
 			"status":  "completed",
 		},
 	})

@@ -673,10 +673,35 @@ emit one finding per group
 ```
 
 The tool call fingerprint is a versioned SHA-256 digest of the tool name and the
-canonicalized arguments the source declared for the call. It is computed inside
-the source adapters and never enters findings, rendered output, or logs. V1 does
-not treat different commands as equivalent: `git status` and `git status --short`
-are different calls, and a shell command is never normalized semantically.
+arguments the source declared for the call. It is computed inside the source
+adapters and never enters findings, rendered output, or logs.
+
+Two argument domains exist, and an adapter chooses between them from the meaning
+its own source format gives a field, never by guessing from the text:
+
+```text
+v1:<hex>       structured JSON arguments
+v1-text:<hex>  exact freeform text input
+```
+
+Structured fingerprints decode the declared JSON arguments, re-encode them with
+canonical object key ordering, and preserve array order, so `{"cmd":"ls"}` and
+`{"timeout":5,"cmd":"ls"}` are the same call.
+
+Freeform fingerprints hash the declared input as text, byte for byte, without
+parsing it as JSON and without trimming or normalizing it. They exist because
+real transcripts record custom tool calls whose input is source text rather than
+a JSON argument object.
+
+The two domains are separated by the hashed payload and by the prefix, so text
+that merely looks like JSON can never be reported as the same call as a
+structured argument with the same visible characters.
+
+V1 does not treat different commands as equivalent: `git status` and
+`git status --short` are different calls, a shell command is never normalized
+semantically, and freeform input that differs only in whitespace is a different
+call. `TOOL002` still requires every matched result to have identical complete
+output content.
 
 `TOOL002` matches on all three parts of the key together. It never groups by
 tool name alone, output hash alone, fingerprint alone, timestamp, or byte size,
@@ -684,7 +709,7 @@ because any of those would claim a repeat that the transcript does not show.
 
 A repeat is legitimate for stateful operations, polling, and calls whose earlier
 result was no longer valid. The finding therefore says the tool *appears* to have
-been called more than once with the same normalized arguments, and never that a
+been called more than once with the same arguments, and never that a
 call was unnecessary.
 
 Only the occurrences after the first are counted as repeated output, and only
@@ -704,7 +729,7 @@ Tool:
 exec_command
 
 Repeated calls:
-2 complete results with the same normalized arguments and the same content
+2 complete results with the same arguments and the same content
 
 Estimated repeated tool output:
 512 tokens (estimated, not provider-reported)

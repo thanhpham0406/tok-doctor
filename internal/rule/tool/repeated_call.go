@@ -124,7 +124,7 @@ func (g *repeatedCallGroup) finding() model.Finding {
 
 func repeatedCallDescription(toolName string, occurrences int, estimate repeatedOutputEstimate) string {
 	description := fmt.Sprintf(
-		"%s appears to have been called %d times with the same normalized arguments, and every complete result had the same content. The first occurrence is the baseline and the %d later ones are repeated calls.",
+		"%s appears to have been called %d times with the same arguments, and every complete result had the same content. The first occurrence is the baseline and the %d later ones are repeated calls.",
 		toolName, occurrences, occurrences-1,
 	)
 	return description + " " + repeatedOutputEstimateDescription(estimate)

@@ -2,11 +2,17 @@ package codex
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/thanhpham0406/tok-doctor/internal/model"
+	"github.com/thanhpham0406/tok-doctor/internal/source"
 )
+
+// freeformExecInput is the shape a real Codex Desktop session records for a
+// custom tool call: source text, not a JSON argument object.
+const freeformExecInput = `const r = await tools.exec_command({"cmd":"echo synthetic"}); text(r.output);`
 
 func functionCallWithArgumentsLine(t *testing.T, callID, name, arguments string) string {
 	t.Helper()
@@ -171,7 +177,61 @@ func TestParseSessionLeavesOrphanResultWithoutFingerprint(t *testing.T) {
 	}
 }
 
-func TestParseSessionFingerprintsCustomToolCallInput(t *testing.T) {
+// Real Codex Desktop sessions record a custom tool call as freeform source
+// text, so the input must be fingerprinted as text rather than rejected.
+func TestParseSessionFingerprintsFreeformCustomToolCallInput(t *testing.T) {
+	path := writeSessionLines(t, []string{
+		customToolCallLine(t, "call-1", "exec", freeformExecInput),
+		customToolCallOutputLine(t, "call-1", customTextOutput("first output")),
+		customToolCallLine(t, "call-2", "exec", freeformExecInput),
+		customToolCallOutputLine(t, "call-2", customTextOutput("second output")),
+		tokenCountLine(t, 10, 0, 1, 11),
+		tokenCountLine(t, 20, 0, 2, 22),
+	})
+
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	fingerprints := resultFingerprints(t, parsed)
+	if fingerprints["call-1"] == "" {
+		t.Fatal("want a fingerprint for real-style freeform custom tool input")
+	}
+	if fingerprints["call-1"] != fingerprints["call-2"] {
+		t.Fatalf("fingerprints = %+v, want the same value for identical freeform input", fingerprints)
+	}
+	if strings.HasPrefix(fingerprints["call-1"], "v1:") {
+		t.Fatalf("fingerprint = %q, want the freeform domain", fingerprints["call-1"])
+	}
+	if strings.Contains(fingerprints["call-1"], "exec_command") {
+		t.Fatalf("fingerprint = %q, want an opaque digest", fingerprints["call-1"])
+	}
+}
+
+func TestParseSessionSeparatesDifferentFreeformCustomToolCallInputs(t *testing.T) {
+	path := writeSessionLines(t, []string{
+		customToolCallLine(t, "call-1", "exec", freeformExecInput),
+		customToolCallOutputLine(t, "call-1", customTextOutput("first output")),
+		customToolCallLine(t, "call-2", "exec", freeformExecInput+"\n"),
+		customToolCallOutputLine(t, "call-2", customTextOutput("second output")),
+		tokenCountLine(t, 10, 0, 1, 11),
+		tokenCountLine(t, 20, 0, 2, 22),
+	})
+
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	fingerprints := resultFingerprints(t, parsed)
+	if fingerprints["call-1"] == "" || fingerprints["call-1"] == fingerprints["call-2"] {
+		t.Fatalf("fingerprints = %+v, want different values for different freeform input", fingerprints)
+	}
+}
+
+// Freeform text that happens to look like JSON stays text: it must not be
+// reinterpreted as structured arguments, or two visibly different programs
+// could be described as the same call.
+func TestParseSessionKeepsJSONLookingFreeformInputAsText(t *testing.T) {
 	path := writeSessionLines(t, []string{
 		customToolCallLine(t, "call-1", "exec", `{"cmd":"ls","timeout":5}`),
 		customToolCallOutputLine(t, "call-1", customTextOutput("first output")),
@@ -186,17 +246,102 @@ func TestParseSessionFingerprintsCustomToolCallInput(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	fingerprints := resultFingerprints(t, parsed)
-	if fingerprints["call-1"] == "" || fingerprints["call-1"] != fingerprints["call-2"] {
-		t.Fatalf("fingerprints = %+v, want the custom shape fingerprinted too", fingerprints)
+	if fingerprints["call-1"] == "" {
+		t.Fatal("want a fingerprint for a JSON-looking freeform input")
+	}
+	if fingerprints["call-1"] == fingerprints["call-2"] {
+		t.Fatal("reordered JSON-looking text is different text, not the same call")
+	}
+	structured, err := source.StructuredToolCallFingerprint("exec", `{"cmd":"ls","timeout":5}`)
+	if err != nil {
+		t.Fatalf("structured fingerprint: %v", err)
+	}
+	if fingerprints["call-1"] == structured {
+		t.Fatalf("fingerprint = %q, want the freeform domain rather than the structured one", fingerprints["call-1"])
 	}
 }
 
-// A custom tool call with freeform, non-JSON input keeps parsing and stays
-// unfingerprinted rather than being described as an equal call.
-func TestParseSessionKeepsFreeformCustomToolCallInput(t *testing.T) {
+// When the source inlines the input as an object instead of a string, the call
+// keeps the structured domain and its canonical key ordering.
+func TestParseSessionFingerprintsInlineObjectCustomToolCallInput(t *testing.T) {
 	path := writeSessionLines(t, []string{
-		customToolCallLine(t, "call-1", "apply_patch", "*** Begin Patch"),
-		customToolCallOutputLine(t, "call-1", customTextOutput("patch applied")),
+		customToolCallLine(t, "call-1", "exec", map[string]any{"cmd": "ls", "timeout": 5}),
+		customToolCallOutputLine(t, "call-1", customTextOutput("first output")),
+		customToolCallLine(t, "call-2", "exec", json.RawMessage(`{"timeout":5,"cmd":"ls"}`)),
+		customToolCallOutputLine(t, "call-2", customTextOutput("second output")),
+		tokenCountLine(t, 10, 0, 1, 11),
+		tokenCountLine(t, 20, 0, 2, 22),
+	})
+
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	fingerprints := resultFingerprints(t, parsed)
+	structured, err := source.StructuredToolCallFingerprint("exec", `{"cmd":"ls","timeout":5}`)
+	if err != nil {
+		t.Fatalf("structured fingerprint: %v", err)
+	}
+	if fingerprints["call-1"] != structured || fingerprints["call-2"] != structured {
+		t.Fatalf("fingerprints = %+v, want the canonical structured value %q", fingerprints, structured)
+	}
+}
+
+func TestParseSessionLeavesFingerprintEmptyWithoutCustomToolCallInput(t *testing.T) {
+	tests := []struct {
+		name string
+		line func(*testing.T, string) string
+	}{
+		{
+			name: "absent input",
+			line: func(t *testing.T, callID string) string {
+				return customToolCallWithoutInputLine(t, callID, "exec")
+			},
+		},
+		{
+			name: "null input",
+			line: func(t *testing.T, callID string) string {
+				return customToolCallLine(t, callID, "exec", nil)
+			},
+		},
+		{
+			name: "empty input",
+			line: func(t *testing.T, callID string) string {
+				return customToolCallLine(t, callID, "exec", "")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeSessionLines(t, []string{
+				tt.line(t, "call-1"),
+				customToolCallOutputLine(t, "call-1", customTextOutput("synthetic output")),
+				tokenCountLine(t, 10, 0, 1, 11),
+				tokenCountLine(t, 20, 0, 2, 22),
+			})
+
+			parsed, err := ParseSession(path)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if parsed.Usage.Total != 22 {
+				t.Fatalf("usage total = %d, want the session to keep parsing", parsed.Usage.Total)
+			}
+			component := findComponent(t, parsed.Snapshots[0].Context, model.ContextToolResult)
+			if component.ToolName != "exec" {
+				t.Fatalf("tool name = %q, want the declared name preserved", component.ToolName)
+			}
+			if component.ToolCallFingerprint != "" {
+				t.Fatalf("fingerprint = %q, want none for unusable custom tool input", component.ToolCallFingerprint)
+			}
+		})
+	}
+}
+
+func TestParseSessionLeavesOrphanCustomToolResultWithoutFingerprint(t *testing.T) {
+	path := writeSessionLines(t, []string{
+		customToolCallOutputLine(t, "call-orphan", customTextOutput("orphan output")),
 		tokenCountLine(t, 10, 0, 1, 11),
 		tokenCountLine(t, 20, 0, 2, 22),
 	})
@@ -206,11 +351,38 @@ func TestParseSessionKeepsFreeformCustomToolCallInput(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	component := findComponent(t, parsed.Snapshots[0].Context, model.ContextToolResult)
-	if component.ToolName != "apply_patch" {
-		t.Fatalf("tool name = %q, want the custom call linked", component.ToolName)
-	}
 	if component.ToolCallFingerprint != "" {
-		t.Fatalf("fingerprint = %q, want none for freeform input", component.ToolCallFingerprint)
+		t.Fatalf("fingerprint = %q, want none for an orphan result", component.ToolCallFingerprint)
+	}
+}
+
+func TestCustomToolCallNeverSerializesTheFreeformInput(t *testing.T) {
+	path := writeSessionLines(t, []string{
+		customToolCallLine(t, "call-1", "exec", freeformExecInput),
+		customToolCallOutputLine(t, "call-1", customTextOutput("synthetic output")),
+		tokenCountLine(t, 10, 0, 1, 11),
+		tokenCountLine(t, 20, 0, 2, 22),
+	})
+
+	parsed, err := ParseSession(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	component := findComponent(t, parsed.Snapshots[0].Context, model.ContextToolResult)
+	if component.ToolCallFingerprint == "" {
+		t.Fatal("fixture must carry a fingerprint")
+	}
+	raw, err := json.Marshal(parsed.Snapshots[0].Context)
+	if err != nil {
+		t.Fatalf("marshal context: %v", err)
+	}
+	for _, secret := range []string{"fingerprint", component.ToolCallFingerprint, "v1", freeformExecInput, "exec_command"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("serialized context exposes %q: %s", secret, raw)
+		}
+	}
+	if rendered := fmt.Sprintf("%+v", parsed); strings.Contains(rendered, freeformExecInput) {
+		t.Fatalf("parsed session retains the freeform input: %s", rendered)
 	}
 }
 

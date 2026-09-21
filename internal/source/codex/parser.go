@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -284,7 +285,7 @@ func (b *contextBuilder) registerCall(item responseItemPayload) {
 	}
 	identity := toolCallIdentity{
 		name:        item.Name,
-		fingerprint: source.ToolCallFingerprintOrEmpty(item.Name, item.declaredArguments()),
+		fingerprint: item.declaredFingerprint(),
 	}
 	for _, key := range []string{item.CallID, item.ID} {
 		if key != "" {
@@ -293,14 +294,36 @@ func (b *contextBuilder) registerCall(item responseItemPayload) {
 	}
 }
 
-// declaredArguments returns the arguments a call record states, from the
-// arguments field of the function_call shape or the input field of the
-// custom_tool_call shape.
-func (item responseItemPayload) declaredArguments() json.RawMessage {
-	if item.Arguments != "" {
-		return json.RawMessage(item.Arguments)
+// declaredFingerprint fingerprints a call from the meaning its own record type
+// gives its fields: a function_call states structured JSON arguments, and a
+// custom_tool_call states freeform text unless it inlines an object or array.
+func (item responseItemPayload) declaredFingerprint() string {
+	switch item.Type {
+	case "function_call":
+		return source.StructuredToolCallFingerprintOrEmpty(item.Name, json.RawMessage(item.Arguments))
+	case "custom_tool_call":
+		if input, ok := decodedJSONString(item.Input); ok {
+			return source.FreeformToolCallFingerprintOrEmpty(item.Name, input)
+		}
+		return source.StructuredToolCallFingerprintOrEmpty(item.Name, item.Input)
+	default:
+		return ""
 	}
-	return item.Input
+}
+
+// decodedJSONString decodes a field the source encoded as a JSON string. It
+// reports false for an absent, null, or non-string field, so a custom tool call
+// that inlines an object or array is never read as text.
+func decodedJSONString(raw json.RawMessage) (string, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '"' {
+		return "", false
+	}
+	var text string
+	if err := json.Unmarshal(trimmed, &text); err != nil {
+		return "", false
+	}
+	return text, true
 }
 
 func (b *contextBuilder) toolResultComponent(item responseItemPayload, recordID string) model.ContextComponent {

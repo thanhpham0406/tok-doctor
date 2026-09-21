@@ -6,6 +6,10 @@ TokDoctor helps you understand where your AI coding tokens go, detect unnecessar
 
 > TokDoctor is currently in early development.
 
+See the [product roadmap](docs/roadmap.md) for the current phase, completion
+criteria, and the path from usage measurement to quality-adjusted cost
+optimization.
+
 ## Features
 
 Supported sources:
@@ -103,11 +107,14 @@ List the sessions TokDoctor can read, then analyze one with the deterministic
 from the local transcript; per-output token contribution remains an estimate.
 
 `TOOL002` reports a tool that appears to have been called more than once with
-the same normalized arguments when every complete result had the same content,
-and only when the source declared a distinct tool call ID for each call. It
-cannot see whether a repeat was legitimate, so stateful operations and polling
-may be reported; the token impact it shows is an estimate of repeated tool
-output, not provider-measured waste.
+the same arguments when every complete result had the same content, and only
+when the source declared a distinct tool call ID for each call. Structured JSON
+arguments are compared through canonical JSON fingerprints, which order object
+keys deterministically; freeform custom-tool input is compared as exact text,
+where a whitespace difference alone makes it a different call. The two are
+separate domains and cannot collide. `TOOL002` cannot see whether a repeat was
+legitimate, so stateful operations and polling may be reported; the token impact
+it shows is an estimate of repeated tool output, not provider-measured waste.
 
 `tok doctor` without a session ID does not discover a session yet. It analyzes
 a placeholder and reports no findings, so pass a session ID for a real result.

@@ -68,7 +68,7 @@ func TestRenderRepeatedToolCallFindingExposesNoInternalDigests(t *testing.T) {
 			Kind:                model.ContextToolResult,
 			ToolCallID:          callID,
 			ToolName:            "exec_command",
-			ToolCallFingerprint: source.ToolCallFingerprintOrEmpty("exec_command", json.RawMessage(secretArguments)),
+			ToolCallFingerprint: source.StructuredToolCallFingerprintOrEmpty("exec_command", json.RawMessage(secretArguments)),
 			ContentHash:         source.ContentHash(secretOutput),
 			Path:                secretPath,
 			ContentBytes:        model.Int64(2048),
